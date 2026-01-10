@@ -14,9 +14,10 @@ pyyaml>=6.0
 # Kaggle API
 kaggle>=1.5.13
 
-# ONNX (Optional)
+# ONNX Export (Phase 1.3)
 onnx>=1.13.0
 onnxruntime>=1.14.0
+onnxscript>=0.1.0
 
 # Visualization
 matplotlib>=3.6.0

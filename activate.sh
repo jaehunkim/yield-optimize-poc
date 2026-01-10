@@ -12,11 +12,9 @@ fi
 # Activate virtual environment
 source venv/bin/activate
 
-# Check if packages are installed, install if not
-if ! python -c "import kaggle" 2>/dev/null; then
-    echo "Installing Python packages..."
-    pip install -q -r training/requirements.txt
-fi
+# Always sync dependencies with requirements.txt
+echo "Syncing dependencies with requirements.txt..."
+pip install -q -r training/requirements.txt
 
 # Check Kaggle credentials
 if [ -f .kaggle/kaggle.json ]; then

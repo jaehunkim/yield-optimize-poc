@@ -14,14 +14,27 @@ if ! command -v kaggle &> /dev/null; then
     exit 1
 fi
 
-# Check if Kaggle credentials are configured
-if [ ! -f ~/.kaggle/kaggle.json ]; then
-    echo "Error: Kaggle API credentials not found."
-    echo "Please follow these steps:"
+# Load Kaggle API token from .env if it exists
+if [ -f "training/.env" ]; then
+    echo "Loading Kaggle API token from .env..."
+    source training/.env
+elif [ -f ".env" ]; then
+    echo "Loading Kaggle API token from .env..."
+    source .env
+fi
+
+# Check if Kaggle API token is configured
+if [ -z "$KAGGLE_API_TOKEN" ] && [ ! -f ~/.kaggle/kaggle.json ]; then
+    echo "Error: Kaggle API token not found."
+    echo ""
+    echo "Please set up Kaggle API token:"
     echo "  1. Go to https://www.kaggle.com/account"
-    echo "  2. Click 'Create New API Token'"
-    echo "  3. Place kaggle.json in ~/.kaggle/"
-    echo "  4. Run: chmod 600 ~/.kaggle/kaggle.json"
+    echo "  2. Scroll to 'API Tokens' section"
+    echo "  3. Click 'Create New Token'"
+    echo "  4. Copy the token (KGAT_...)"
+    echo "  5. Create training/.env and add: export KAGGLE_API_TOKEN=your_token"
+    echo "  6. Run: source training/.env"
+    echo "  7. Run this script again"
     exit 1
 fi
 

@@ -153,7 +153,8 @@ Early stopping at epoch 5
 - Early stopping 필수 (Epoch 2가 최적)
 
 **다음 단계:**
-- Phase 2: ONNX 변환 및 Rust DSP 엔진 개발
+- Phase 1.3 (선택): ONNX 변환 및 Python 정합성 검증
+- Phase 2: Rust 실시간 DSP 엔진 개발
 
 ## 생성 파일
 - `training/models/deepfm_emb16_lr0.001_best.pth` - Experiment 1 모델

@@ -76,7 +76,9 @@ training/
   - Exp 1 (emb=16, lr=0.001): Test AUC 0.7191
   - **Exp 2 (emb=8, lr=0.0005): Test AUC 0.7503** (최종 모델)
 
-**다음 단계**: Phase 2 (ONNX 변환 및 Rust DSP 엔진)
+**다음 단계**:
+- Phase 1.3 (선택): ONNX 변환 및 Python 정합성 검증
+- Phase 2: Rust 실시간 DSP 엔진 개발
 
 ## 참고 문서
 

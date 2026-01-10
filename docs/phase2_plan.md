@@ -1,8 +1,11 @@
 # Phase 2 Plan: Real-time Bidding Engine (Rust)
 
+**최종 업데이트**: 2026년 1월 10일
+**시작일**: 2026년 1월 10일
+
 ## 목표
 
-Phase 1에서 학습한 DeepFM 모델(ONNX)을 Rust 기반 실시간 서빙 엔진으로 구현하여 프로덕션급 DSP(Demand-Side Platform) 입찰 시스템을 구축합니다.
+Phase 1.5에서 학습한 DeepFM 모델(ONNX)을 Rust 기반 실시간 서빙 엔진으로 구현하여 프로덕션급 DSP(Demand-Side Platform) 입찰 시스템을 구축합니다.
 
 **핵심 목표:**
 - Sub-millisecond 추론 레이턴시 달성 (P50 < 1ms, P99 < 5ms)
@@ -17,12 +20,16 @@ Phase 1에서 학습한 DeepFM 모델(ONNX)을 Rust 기반 실시간 서빙 엔�
 
 ## 기술 스택
 
-- **언어**: Rust 2021 Edition
-- **추론 엔진**: ONNX Runtime (ort crate)
-- **웹 프레임워크**: Actix-web
-- **직렬화**: serde, serde_json
+- **언어**: Rust 1.92.0 (2021 Edition)
+- **추론 엔진**: ONNX Runtime (ort crate 2.0.0-rc.11) - CPU execution provider
+- **웹 프레임워크**: Axum 0.7 (Tokio 기반)
+- **비동기 런타임**: Tokio 1.x
+- **직렬화**: serde 1.x, serde_json
 - **로깅**: tracing, tracing-subscriber
-- **테스트**: cargo test, criterion (벤치마크)
+- **동기화**: parking_lot 0.12 (RwLock)
+- **수치 연산**: ndarray 0.17
+- **에러 처리**: anyhow 1.x
+- **테스트**: cargo test, criterion (벤치마크 - 예정)
 
 ## 프로젝트 구조
 
@@ -30,43 +37,73 @@ Phase 1에서 학습한 DeepFM 모델(ONNX)을 Rust 기반 실시간 서빙 엔�
 serving/
 ├── Cargo.toml              # Rust 프로젝트 설정
 ├── src/
-│   ├── main.rs            # 진입점, 서버 초기화
-│   ├── model.rs           # ONNX 모델 로딩 및 추론
-│   ├── features.rs        # 피처 전처리 (feature_info.pkl 기반)
-│   ├── api.rs             # REST API 핸들러
-│   └── bidding.rs         # 입찰가 계산 로직
+│   ├── main.rs            # ✅ 진입점, 서버 초기화
+│   ├── lib.rs             # ✅ 라이브러리 exports
+│   ├── model.rs           # ✅ ONNX 모델 로딩 및 추론 (CPU)
+│   ├── features.rs        # ✅ 피처 전처리 (현재 더미, Phase 2.2에서 구현)
+│   ├── api.rs             # ✅ REST API 핸들러 (/health, /predict)
+│   └── bidding.rs         # ⏸️  입찰가 계산 로직 (Phase 2.4)
+├── models/
+│   └── deepfm_emb8_lr0.0001_dnn25612864_neg150_best.onnx  # ✅ ONNX 모델
+├── examples/
+│   └── test_model_loading.rs  # ✅ 모델 로딩 테스트
+├── scripts/
+│   └── compare_onnx_outputs.py  # ✅ Python vs Rust 출력 비교
 ├── config/
-│   └── server.yaml        # 서버 설정 (포트, 모델 경로 등)
+│   └── server.yaml        # ⏸️  서버 설정 (Phase 2.2+)
 └── benches/
-    └── inference.rs       # 성능 벤치마크
+    └── inference.rs       # ⏸️  성능 벤치마크 (Phase 2.5)
 ```
 
 ## Phase 2 단계별 계획
 
-### Phase 2.1: 기본 인프라 구축
+### Phase 2.1: 기본 인프라 구축 ✅ 완료
 
 **목표**: Rust 프로젝트 셋업 및 ONNX 모델 로딩
 
 **작업 항목:**
-1. Cargo 프로젝트 초기화 (`cargo init serving`)
-2. 의존성 추가 (ort, actix-web, serde, tokio)
-3. ONNX 모델 로딩 검증
-   - `training/models/deepfm_emb8_lr0.0005_best.onnx` 로드
-   - 더미 입력으로 추론 테스트
-4. 기본 헬스체크 엔드포인트 구현 (`GET /health`)
+1. ✅ Cargo 프로젝트 초기화 (`cargo init serving`)
+   - Rust 1.92.0 (2021 Edition) 사용
+2. ✅ 의존성 추가
+   - ort 2.0.0-rc.11 (ONNX Runtime)
+   - axum 0.7, tokio 1.x (비동기 웹 서버)
+   - serde 1.x, serde_json (직렬화)
+   - tracing, tracing-subscriber (로깅)
+   - parking_lot 0.12 (효율적인 동기화)
+3. ✅ ONNX 모델 로딩 검증
+   - `serving/models/deepfm_emb8_lr0.0001_dnn25612864_neg150_best.onnx` 로드
+   - Phase 1.5 최종 모델 (ND 1:150, DNN 256-128-64)
+   - 더미 입력으로 추론 테스트 (15개 피처)
+   - **CPU 전용 실행** (CPU execution provider)
+4. ✅ 기본 헬스체크 엔드포인트 구현 (`GET /health`)
+5. ✅ CTR 예측 API 구현 (`POST /predict`)
+6. ✅ Python ONNX Runtime 출력 비교 검증
 
-**검증 기준:**
-- ONNX 모델이 Rust에서 정상 로드됨
-- 더미 입력으로 추론 성공 (출력값 확인)
-- 헬스체크 API 응답 200 OK
+**검증 결과:**
+- ✅ ONNX 모델이 Rust에서 정상 로드됨
+- ✅ 더미 입력으로 추론 성공 (CTR: 0.001381)
+- ✅ 헬스체크 API 응답 200 OK
+- ✅ Python vs Rust 출력 일치 (상대 오차: 0.004%)
+- ✅ **레이턴시 목표 초과 달성**: 0.106ms (목표 1ms의 10분의 1)
+- ✅ 연속 요청 안정성 검증 완료
 
-**진행 상황**: 🚧 진행 예정
+**성능 측정 결과:**
+- 초기 레이턴시: 0.289ms
+- 워밍업 후: **0.106ms** (P50 < 1ms 목표 초과 달성)
+- Python 출력 일치: 차이 5.96e-08
+
+**진행 상황**: ✅ 완료 (2026-01-10)
 
 ---
 
-### Phase 2.2: 피처 전처리 구현
+### Phase 2.2: 피처 전처리 구현 🚧 대기 중
 
 **목표**: iPinYou 데이터셋의 피처를 모델 입력 형식으로 변환
+
+**현재 상태:**
+- Phase 2.1에서 더미 피처 전처리 구현 완료 (모든 값 0으로 설정)
+- `FeatureProcessor` 구조체 및 `AdRequest` 정의 완료
+- `load_from_json()` 메서드 준비 완료 (#[allow(dead_code)])
 
 **작업 항목:**
 1. `feature_info.pkl` 파싱
@@ -82,6 +119,8 @@ serving/
 **검증 기준:**
 - Rust 전처리 출력 == Python 전처리 출력
 - 모든 피처 타입(sparse, dense) 정상 처리
+
+**진행 상황**: 🚧 대기 중 (Phase 2.1 완료 후 시작)
 
 ---
 
@@ -250,7 +289,23 @@ bidding:
 
 ## 참고 자료
 
-- [ONNX Runtime Rust Binding](https://github.com/pykeio/ort)
-- [Actix-web Documentation](https://actix.rs/)
+- [ONNX Runtime Rust Binding (ort)](https://github.com/pykeio/ort)
+- [Axum Documentation](https://docs.rs/axum/latest/axum/)
+- [Tokio Documentation](https://tokio.rs/)
 - [iPinYou Feature Schema](../docs/research/ipinyou-benchmark.md)
-- [Phase 1 Results](./phase1_results.md)
+- [Phase 1.5 Results](./phase1.5_data_expansion.md)
+
+## Phase 1.5 완료 상태
+
+**모델 정보:**
+- 모델 파일: `deepfm_emb8_lr0.0001_dnn25612864_neg150_best.pth` (PyTorch)
+- ONNX 파일: `deepfm_emb8_lr0.0001_dnn25612864_neg150_best.onnx`
+- 아키텍처: DeepFM, embedding_dim=8, DNN hidden=(256, 128, 64)
+- 학습 데이터: Negative Downsampling 1:150 (Training set only)
+- 성능: Test AUC 0.6958 (LR 베이스라인 0.6727 대비 +3.4% 개선)
+
+**피처 정보:**
+- Sparse features: 10개 (weekday, hour, region, city, adexchange, domain, slotid, slotwidth, slotheight, slotvisibility, slotformat, creative, user_tag)
+- Dense features: 5개 (정규화된 수치 피처)
+- 총 입력 차원: 15개 피처
+- 출력: 단일 CTR 확률값 (0~1)

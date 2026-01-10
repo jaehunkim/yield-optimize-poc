@@ -1,0 +1,11 @@
+target/
+models/
+*.onnx
+scripts/
+examples/
+.git/
+.gitignore
+README.md
+docker-compose.yml
+Dockerfile
+nginx.conf

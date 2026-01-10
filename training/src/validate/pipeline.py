@@ -100,14 +100,6 @@ def check_data_quality(train_df, val_df, test_df, feature_info):
         print(f"  {name}: {'✓ Sorted' if is_sorted else '✗ NOT SORTED'}")
 
 
-def prepare_lr_data(df, feature_info):
-    """Logistic Regression을 위한 데이터 준비"""
-    features = feature_info['sparse_features'] + feature_info['dense_features']
-    X = df[features].values
-    y = df[feature_info['target']].values
-    return X, y
-
-
 def prepare_onehot_data(train_df, val_df, test_df, feature_info):
     """One-Hot Encoding을 적용한 데이터 준비 (sparse matrix)"""
     sparse_features = feature_info['sparse_features']
@@ -142,48 +134,6 @@ def prepare_onehot_data(train_df, val_df, test_df, feature_info):
 
 
 def train_baseline(train_df, val_df, test_df, feature_info):
-    """Logistic Regression baseline 학습 (Label Encoding)"""
-    print("\n=== Training Logistic Regression Baseline (Label Encoding) ===")
-
-    # Prepare data
-    X_train, y_train = prepare_lr_data(train_df, feature_info)
-    X_val, y_val = prepare_lr_data(val_df, feature_info)
-    X_test, y_test = prepare_lr_data(test_df, feature_info)
-
-    print(f"X_train shape: {X_train.shape}")
-    print(f"y_train distribution: {np.bincount(y_train.astype(int))}")
-    print(f"Click rate - Train: {y_train.mean():.4f}, Val: {y_val.mean():.4f}, Test: {y_test.mean():.4f}")
-
-    # Train LR
-    print("\nTraining Logistic Regression...")
-    lr = LogisticRegression(
-        max_iter=200,
-        class_weight='balanced',
-        solver='saga',
-        verbose=1,
-        random_state=42,
-        n_jobs=-1
-    )
-    lr.fit(X_train, y_train)
-
-    # Evaluate
-    print("\n=== Evaluation Results (Label Encoding) ===")
-    for name, X, y in [("Train", X_train, y_train),
-                       ("Val", X_val, y_val),
-                       ("Test", X_test, y_test)]:
-        y_pred_proba = lr.predict_proba(X)[:, 1]
-        y_pred = lr.predict(X)
-
-        auc = roc_auc_score(y, y_pred_proba)
-        logloss = log_loss(y, y_pred_proba)
-        acc = accuracy_score(y, y_pred)
-
-        print(f"{name:5s} - AUC: {auc:.4f}, LogLoss: {logloss:.4f}, Acc: {acc:.4f}")
-
-    return lr
-
-
-def train_baseline_onehot(train_df, val_df, test_df, feature_info):
     """Logistic Regression baseline 학습 (One-Hot Encoding)"""
     print("\n=== Training Logistic Regression Baseline (One-Hot Encoding) ===")
 
@@ -198,12 +148,13 @@ def train_baseline_onehot(train_df, val_df, test_df, feature_info):
     # Train LR (supports sparse matrices)
     print("\nTraining Logistic Regression...")
     lr = LogisticRegression(
-        max_iter=200,
+        max_iter=500,              # 피처가 많아졌으므로 반복 횟수 증가
         class_weight='balanced',
-        solver='saga',
+        solver='liblinear',        # 데이터셋이 아주 크지 않다면 liblinear가 더 안정적일 수 있음
+        C=1.0,                     # 규제 강도 (너무 낮으면 0으로 수렴하므로 확인 필요)
         verbose=1,
-        random_state=42,
-        n_jobs=-1
+        random_state=42
+        # n_jobs=-1은 liblinear에서 지원하지 않으므로 주의
     )
     lr.fit(X_train, y_train)
 
@@ -261,14 +212,10 @@ def main():
     # Step 3: Check data quality
     check_data_quality(train_df, val_df, test_df, feature_info)
 
-    # Step 4: Train baseline with Label Encoding
-    lr_label = train_baseline(train_df, val_df, test_df, feature_info)
-
-    # Step 5: Train baseline with One-Hot Encoding
-    lr_onehot = train_baseline_onehot(train_df, val_df, test_df, feature_info)
+    # Step 4: Train baseline
+    lr_model = train_baseline(train_df, val_df, test_df, feature_info)
 
     print("\n=== Validation Complete ===")
-    print("Compared Label Encoding vs One-Hot Encoding for LR")
     print("Data pipeline is ready for DeepFM training!")
 
 

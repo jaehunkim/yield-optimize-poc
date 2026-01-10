@@ -65,5 +65,11 @@ training/
 
 ## 참고 문서
 
+**주요 문서**:
 - [Phase 1 상세 계획](docs/phase1_plan.md) - 전체 로드맵
 - [iPinYou 벤치마크](docs/first-goal.md) - 캠페인별 AUC 목표치
+
+**리서치 자료** (`docs/research/`):
+- [iPinYou Benchmark](docs/research/ipinyou-benchmark.md) - 논문 벤치마크, 데이터셋 통계
+
+**중요**: 구현 시 `docs/research/` 폴더의 벤치마크 정보를 주기적으로 참조하여 목표치 및 데이터 특성을 확인할 것

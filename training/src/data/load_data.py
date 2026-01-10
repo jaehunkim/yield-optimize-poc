@@ -10,6 +10,7 @@ iPinYou 데이터셋 로더
 import bz2
 import os
 import pickle
+from multiprocessing import Pool, cpu_count
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -19,30 +20,62 @@ from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 
 
+def _load_single_day(args):
+    """Helper function for parallel loading of impression files"""
+    filepath, campaign_id = args
+
+    with bz2.open(filepath, 'rt') as f:
+        df = pd.read_csv(f, sep='\t', header=None, names=[
+            'bid_id', 'timestamp', 'log_type', 'ipinyou_id', 'user_agent',
+            'ip', 'region', 'city', 'ad_exchange', 'domain', 'url',
+            'anon_url_id', 'ad_slot_id', 'ad_slot_width', 'ad_slot_height',
+            'ad_slot_visibility', 'ad_slot_format', 'ad_slot_floor_price',
+            'creative_id', 'bidding_price', 'paying_price', 'key_page_url',
+            'advertiser_id', 'user_tags'
+        ])
+        # Filter by campaign
+        return df[df['advertiser_id'] == campaign_id]
+
+
+def _load_click_file(filepath):
+    """Helper function for parallel loading of click files"""
+    click_ids = set()
+    with bz2.open(filepath, 'rt') as f:
+        for line in f:
+            bid_id = line.split('\t')[0]
+            click_ids.add(bid_id)
+    return click_ids
+
+
 class iPinYouDataLoader:
     """iPinYou 데이터셋 로더"""
 
     def __init__(self,
                  data_dir: str = "training/data/raw/ipinyou.contest.dataset",
-                 campaign_id: int = 2259):
+                 campaign_id: int = 2259,
+                 n_jobs: int = -1):
         """
         Args:
             data_dir: iPinYou 데이터 디렉토리
             campaign_id: 사용할 캠페인 ID (2259, 3386 등)
+            n_jobs: 병렬 처리에 사용할 프로세스 수 (-1이면 CPU 코어 수만큼)
         """
         self.data_dir = Path(data_dir)
         self.campaign_id = campaign_id
+        self.n_jobs = cpu_count() if n_jobs == -1 else n_jobs
 
         # Campaign에 따라 season 자동 선택
-        # Campaign 2259: training3rd
-        # Campaign 3386: training2nd
-        if campaign_id == 2259:
-            self.season = "training3rd"
-        elif campaign_id == 3386:
+        # training2nd: 1458 (easy, AUC 0.98), 3358, 3386 (hard, AUC 0.74-0.84), 3427, 3476
+        # training3rd: 2259 (medium, AUC 0.65-0.72), 2261, 2821, 2997
+        if campaign_id in [1458, 3358, 3386, 3427, 3476]:
             self.season = "training2nd"
+        elif campaign_id in [2259, 2261, 2821, 2997]:
+            self.season = "training3rd"
         else:
-            # 기타 캠페인은 직접 확인 필요
-            self.season = "training3rd"  # 기본값
+            # 알 수 없는 캠페인
+            raise ValueError(f"Unknown campaign_id: {campaign_id}. "
+                           f"Available: training2nd={[1458, 3358, 3386, 3427, 3476]}, "
+                           f"training3rd={[2259, 2261, 2821, 2997]}")
 
         # Feature columns from iPinYou dataset
         # Format: [bid_id, timestamp, log_type, iPinYou_id, user_agent, IP, region, city,
@@ -53,7 +86,7 @@ class iPinYouDataLoader:
 
     def load_campaign_data(self, days: List[str] = None) -> pd.DataFrame:
         """
-        특정 날짜들의 impression 데이터를 로드
+        특정 날짜들의 impression 데이터를 로드 (병렬 처리)
 
         Args:
             days: 날짜 리스트 (e.g., ['20131019', '20131020'])
@@ -67,31 +100,23 @@ class iPinYouDataLoader:
             imp_files = sorted(self.data_dir.glob(f"{self.season}/imp.*.txt.bz2"))
             days = [f.stem.split('.')[1] for f in imp_files]
 
-        all_data = []
-
-        for day in tqdm(days, desc="Loading days"):
+        # Prepare file paths
+        filepaths = []
+        for day in days:
             filepath = self.data_dir / self.season / f"imp.{day}.txt.bz2"
-
-            if not filepath.exists():
+            if filepath.exists():
+                filepaths.append((filepath, self.campaign_id))
+            else:
                 print(f"Warning: {filepath} not found, skipping")
-                continue
 
-            # Read compressed file
-            with bz2.open(filepath, 'rt') as f:
-                # iPinYou format is tab-separated
-                df = pd.read_csv(f, sep='\t', header=None, names=[
-                    'bid_id', 'timestamp', 'log_type', 'ipinyou_id', 'user_agent',
-                    'ip', 'region', 'city', 'ad_exchange', 'domain', 'url',
-                    'anon_url_id', 'ad_slot_id', 'ad_slot_width', 'ad_slot_height',
-                    'ad_slot_visibility', 'ad_slot_format', 'ad_slot_floor_price',
-                    'creative_id', 'bidding_price', 'paying_price', 'key_page_url',
-                    'advertiser_id', 'user_tags'
-                ])
-
-                # Filter by campaign
-                df = df[df['advertiser_id'] == self.campaign_id]
-
-                all_data.append(df)
+        # Parallel loading
+        print(f"Loading {len(filepaths)} days using {self.n_jobs} processes...")
+        with Pool(self.n_jobs) as pool:
+            all_data = list(tqdm(
+                pool.imap(_load_single_day, filepaths),
+                total=len(filepaths),
+                desc="Loading days"
+            ))
 
         data = pd.concat(all_data, ignore_index=True)
         print(f"Loaded {len(data)} impressions from {len(days)} days (Campaign {self.campaign_id})")
@@ -100,7 +125,7 @@ class iPinYouDataLoader:
 
     def add_click_labels(self, imp_data: pd.DataFrame, days: List[str]) -> pd.DataFrame:
         """
-        클릭 로그를 읽어서 impression에 click label 추가
+        클릭 로그를 읽어서 impression에 click label 추가 (병렬 처리)
 
         Args:
             imp_data: impression DataFrame
@@ -109,19 +134,26 @@ class iPinYouDataLoader:
         Returns:
             DataFrame with 'click' column (1 if clicked, 0 otherwise)
         """
-        # Load click data
-        click_bid_ids = set()
-
-        for day in tqdm(days, desc="Loading clicks"):
+        # Prepare click file paths
+        click_files = []
+        for day in days:
             filepath = self.data_dir / self.season / f"clk.{day}.txt.bz2"
+            if filepath.exists():
+                click_files.append(filepath)
 
-            if not filepath.exists():
-                continue
+        # Parallel loading
+        print(f"Loading click files using {self.n_jobs} processes...")
+        with Pool(self.n_jobs) as pool:
+            click_id_sets = list(tqdm(
+                pool.imap(_load_click_file, click_files),
+                total=len(click_files),
+                desc="Loading clicks"
+            ))
 
-            with bz2.open(filepath, 'rt') as f:
-                # Click files only have bid_id
-                for line in f:
-                    click_bid_ids.add(line.strip())
+        # Merge all click IDs
+        click_bid_ids = set()
+        for click_ids in click_id_sets:
+            click_bid_ids.update(click_ids)
 
         # Add click label
         imp_data['click'] = imp_data['bid_id'].isin(click_bid_ids).astype(int)

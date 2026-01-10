@@ -276,13 +276,61 @@ class iPinYouDataLoader:
 
         return data, feature_info
 
+    @staticmethod
+    def downsample_negatives(data: pd.DataFrame,
+                            neg_pos_ratio: int = 100,
+                            target_col: str = 'click',
+                            random_seed: int = 42) -> pd.DataFrame:
+        """
+        Negative downsampling to handle class imbalance
+
+        Args:
+            data: DataFrame with click labels
+            neg_pos_ratio: Ratio of negatives to positives (e.g., 100 means 100:1)
+            target_col: Target column name
+            random_seed: Random seed for reproducibility
+
+        Returns:
+            Downsampled DataFrame
+        """
+        import numpy as np
+
+        # Separate positive and negative samples
+        pos_data = data[data[target_col] == 1].copy()
+        neg_data = data[data[target_col] == 0].copy()
+
+        n_pos = len(pos_data)
+        n_neg = len(neg_data)
+
+        # Calculate number of negatives to sample
+        n_neg_sampled = min(n_pos * neg_pos_ratio, n_neg)
+
+        print(f"\n--- Negative Downsampling ---")
+        print(f"Original: Pos={n_pos}, Neg={n_neg} (ratio 1:{n_neg/n_pos:.1f})")
+        print(f"Target ratio: 1:{neg_pos_ratio}")
+
+        # Sample negatives
+        np.random.seed(random_seed)
+        neg_sampled = neg_data.sample(n=n_neg_sampled, random_state=random_seed)
+
+        # Combine and shuffle
+        result = pd.concat([pos_data, neg_sampled], ignore_index=True)
+        result = result.sample(frac=1, random_state=random_seed).reset_index(drop=True)
+
+        print(f"Sampled: Pos={n_pos}, Neg={n_neg_sampled} (ratio 1:{n_neg_sampled/n_pos:.1f})")
+        print(f"Total samples: {len(result)} ({len(result)/len(data)*100:.1f}% of original)")
+        print(f"New click rate: {result[target_col].mean():.4f}")
+
+        return result
+
     def save_processed_data(self,
                            train_data: pd.DataFrame,
                            test_data: pd.DataFrame,
                            feature_info: Dict,
                            campaign_id: int,
                            output_base_dir: str = "training/data/processed",
-                           val_split: float = 0.2):
+                           val_split: float = 0.2,
+                           neg_pos_ratio: int = None):
         """
         전처리된 데이터 저장 (캠페인별 디렉토리)
 
@@ -293,22 +341,40 @@ class iPinYouDataLoader:
             campaign_id: Campaign ID
             output_base_dir: Base output directory
             val_split: Validation split ratio from training data (default: 0.2)
+            neg_pos_ratio: If set, apply negative downsampling (e.g., 100 for 100:1 ratio)
         """
-        # Create campaign subdirectory
-        output_path = Path(output_base_dir) / f"campaign_{campaign_id}"
+        # Create campaign subdirectory with sampling ratio suffix
+        if neg_pos_ratio is not None:
+            dir_name = f"campaign_{campaign_id}_neg{neg_pos_ratio}"
+        else:
+            dir_name = f"campaign_{campaign_id}"
+
+        output_path = Path(output_base_dir) / dir_name
         output_path.mkdir(parents=True, exist_ok=True)
 
         # Sort training data by timestamp to ensure chronological order
         train_data = train_data.sort_values('timestamp').reset_index(drop=True)
 
-        # Split training data into train/val chronologically (no data leakage)
+        # Split training data into train/val chronologically FIRST (no data leakage)
         n = len(train_data)
         train_end = int(n * (1 - val_split))
 
-        final_train = train_data.iloc[:train_end]
-        final_val = train_data.iloc[train_end:]
+        final_train = train_data.iloc[:train_end].copy()
+        final_val = train_data.iloc[train_end:].copy()
+
+        # Apply negative downsampling ONLY to training set (NOT val/test)
+        if neg_pos_ratio is not None:
+            print(f"\n=== Applying Negative Downsampling to TRAINING SET ONLY ===")
+            final_train = self.downsample_negatives(
+                final_train,
+                neg_pos_ratio=neg_pos_ratio,
+                target_col='click'
+            )
+            print(f"Val/Test sets remain at original distribution")
 
         print(f"\n=== Data Split (Using Official Testing Set) ===")
+        if neg_pos_ratio is not None:
+            print(f"Negative Downsampling: 1:{neg_pos_ratio}")
         print(f"Train: {len(final_train)} ({len(final_train)/n*100:.1f}%)")
         print(f"Val: {len(final_val)} ({len(final_val)/n*100:.1f}%)")
         print(f"Test: {len(test_data)} (official leaderboard set)")
@@ -340,11 +406,18 @@ def main():
                        help='Base output directory')
     parser.add_argument('--val-split', type=float, default=0.2,
                        help='Validation split ratio (default: 0.2)')
+    parser.add_argument('--neg-pos-ratio', type=int, default=None,
+                       help='Negative to positive ratio for downsampling (e.g., 100 for 100:1). '
+                            'If not set, no downsampling is applied.')
 
     args = parser.parse_args()
 
     # Check if data already exists
-    expected_path = Path(args.output_dir) / f"campaign_{args.campaign}"
+    if args.neg_pos_ratio is not None:
+        expected_path = Path(args.output_dir) / f"campaign_{args.campaign}_neg{args.neg_pos_ratio}"
+    else:
+        expected_path = Path(args.output_dir) / f"campaign_{args.campaign}"
+
     if (expected_path / "train.csv").exists() and \
        (expected_path / "val.csv").exists() and \
        (expected_path / "test.csv").exists() and \
@@ -387,7 +460,8 @@ def main():
         feature_info=feature_info,
         campaign_id=args.campaign,
         output_base_dir=args.output_dir,
-        val_split=args.val_split
+        val_split=args.val_split,
+        neg_pos_ratio=args.neg_pos_ratio
     )
 
     print(f"\n{'='*60}")

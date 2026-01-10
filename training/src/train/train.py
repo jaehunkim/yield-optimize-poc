@@ -19,17 +19,27 @@ from training.src.models.deepfm_trainer import DeepFMTrainer
 
 
 def load_processed_data(campaign_id: int,
-                       data_base_dir: str = "training/data/processed"):
+                       data_base_dir: str = "training/data/processed",
+                       neg_pos_ratio: int = None):
     """전처리된 데이터 로드 (캠페인별 디렉토리)"""
-    data_path = Path(data_base_dir) / f"campaign_{campaign_id}"
+    # Determine directory based on neg_pos_ratio
+    if neg_pos_ratio is not None:
+        dir_name = f"campaign_{campaign_id}_neg{neg_pos_ratio}"
+    else:
+        dir_name = f"campaign_{campaign_id}"
+
+    data_path = Path(data_base_dir) / dir_name
 
     print(f"\n=== Loading Data from {data_path} ===")
+    if neg_pos_ratio is not None:
+        print(f"Using downsampled data (1:{neg_pos_ratio} ratio)")
 
     if not data_path.exists():
         raise FileNotFoundError(
             f"Data not found at {data_path}. "
             f"Run load_data.py first: python training/src/data/load_data.py "
             f"--campaign {campaign_id}"
+            + (f" --neg-pos-ratio {neg_pos_ratio}" if neg_pos_ratio else "")
         )
 
     train_df = pd.read_csv(data_path / "train.csv")
@@ -57,6 +67,9 @@ def main():
                        help='Base processed data directory')
     parser.add_argument('--save-dir', type=str, default='training/models',
                        help='Model save directory')
+    parser.add_argument('--neg-pos-ratio', type=int, default=None,
+                       help='Negative to positive ratio for downsampled data (e.g., 100 for 100:1). '
+                            'If not set, uses original distribution.')
 
     # Model hyperparameters
     parser.add_argument('--embedding-dim', type=int, default=16,
@@ -108,7 +121,8 @@ def main():
     # Load data
     train_df, val_df, test_df, feature_info = load_processed_data(
         campaign_id=args.campaign,
-        data_base_dir=args.data_base_dir
+        data_base_dir=args.data_base_dir,
+        neg_pos_ratio=args.neg_pos_ratio
     )
 
     # Initialize trainer
@@ -130,17 +144,26 @@ def main():
         val_df=val_df,
         epochs=args.epochs,
         early_stopping_patience=args.patience,
-        save_dir=args.save_dir
+        save_dir=args.save_dir,
+        neg_pos_ratio=args.neg_pos_ratio
     )
 
     # Save training history
     save_path = Path(args.save_dir)
     save_path.mkdir(parents=True, exist_ok=True)
-    history_filename = f'training_history_emb{args.embedding_dim}_lr{args.lr}.json'
+
+    # Build filenames with DNN hidden and neg_pos_ratio
+    dnn_str = "".join(str(h) for h in dnn_hidden_units)
+    if args.neg_pos_ratio is not None:
+        history_filename = f'training_history_emb{args.embedding_dim}_lr{args.lr}_dnn{dnn_str}_neg{args.neg_pos_ratio}.json'
+        model_filename = f'deepfm_emb{args.embedding_dim}_lr{args.lr}_dnn{dnn_str}_neg{args.neg_pos_ratio}_best.pth'
+    else:
+        history_filename = f'training_history_emb{args.embedding_dim}_lr{args.lr}_dnn{dnn_str}.json'
+        model_filename = f'deepfm_emb{args.embedding_dim}_lr{args.lr}_dnn{dnn_str}_best.pth'
+
     with open(save_path / history_filename, 'w') as f:
         json.dump(history, f, indent=2)
 
-    model_filename = f'deepfm_emb{args.embedding_dim}_lr{args.lr}_best.pth'
     print(f"\nTraining history saved to {save_path / history_filename}")
     print(f"Best model saved to {save_path / model_filename}")
 

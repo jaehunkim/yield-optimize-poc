@@ -23,17 +23,35 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from training.src.models.deepfm_trainer import DeepFMTrainer, CTRDataset
 
 
-def load_processed_data(campaign_id: int, num_days: int,
+def load_processed_data(campaign_id: int,
                        data_base_dir: str = "training/data/processed",
+                       neg_pos_ratio: int = None,
                        num_samples: int = 1000):
     """전처리된 데이터 로드"""
-    data_path = Path(data_base_dir) / f"campaign_{campaign_id}" / f"{num_days}days"
+    # Determine directory based on neg_pos_ratio
+    if neg_pos_ratio is not None:
+        dir_name = f"campaign_{campaign_id}_neg{neg_pos_ratio}"
+    else:
+        dir_name = f"campaign_{campaign_id}"
+
+    data_path = Path(data_base_dir) / dir_name
+
+    print(f"Loading data from: {data_path}")
+    if neg_pos_ratio is not None:
+        print(f"Using downsampled data (1:{neg_pos_ratio} ratio)")
 
     if not data_path.exists():
-        raise FileNotFoundError(f"Data not found at {data_path}")
+        raise FileNotFoundError(
+            f"Data not found at {data_path}. "
+            f"Run load_data.py first: python training/src/data/load_data.py "
+            f"--campaign {campaign_id}"
+            + (f" --neg-pos-ratio {neg_pos_ratio}" if neg_pos_ratio else "")
+        )
 
     # Load full train data for vocab size calculation
     train_df = pd.read_csv(data_path / "train.csv")
+    # Also load val to ensure correct vocab sizes (important for downsampled data)
+    val_df = pd.read_csv(data_path / "val.csv")
 
     # Load limited test samples for verification
     test_df = pd.read_csv(data_path / "test.csv", nrows=num_samples)
@@ -41,15 +59,13 @@ def load_processed_data(campaign_id: int, num_days: int,
     with open(data_path / "feature_info.pkl", 'rb') as f:
         feature_info = pickle.load(f)
 
-    return train_df, test_df, feature_info
+    return train_df, val_df, test_df, feature_info
 
 
 def main():
     parser = argparse.ArgumentParser(description='Verify ONNX model against PyTorch')
     parser.add_argument('--campaign', type=int, default=2259,
                        help='Campaign ID')
-    parser.add_argument('--days', type=int, default=3,
-                       help='Number of days')
     parser.add_argument('--model-path', type=str, required=True,
                        help='Path to PyTorch model checkpoint')
     parser.add_argument('--onnx-path', type=str, default=None,
@@ -60,12 +76,20 @@ def main():
                        help='Output verification results')
     parser.add_argument('--num-samples', type=int, default=1000,
                        help='Number of samples to test')
+    parser.add_argument('--neg-pos-ratio', type=int, default=None,
+                       help='Negative to positive ratio for downsampled data (e.g., 100 for 100:1). '
+                            'If not set, uses original distribution.')
+    parser.add_argument('--dnn-hidden', type=str, default='256,128,64',
+                       help='DNN hidden units (comma-separated)')
 
     args = parser.parse_args()
 
     # Auto-detect hyperparameters
     parsed_params = DeepFMTrainer.parse_model_filename(args.model_path)
     embedding_dim = parsed_params['embedding_dim']
+
+    # Parse DNN hidden units
+    dnn_hidden_units = tuple(map(int, args.dnn_hidden.split(',')))
 
     # Determine ONNX path
     if args.onnx_path is None:
@@ -78,18 +102,20 @@ def main():
     print(f"PyTorch model: {args.model_path}")
     print(f"ONNX model: {args.onnx_path}")
     print(f"Embedding dim: {embedding_dim}")
+    print(f"DNN hidden: {dnn_hidden_units}")
     print(f"Test samples: {args.num_samples}")
     print("=" * 60)
 
     # Load data
     print("\n=== Loading Data ===")
-    train_df, test_df, feature_info = load_processed_data(
+    train_df, val_df, test_df, feature_info = load_processed_data(
         campaign_id=args.campaign,
-        num_days=args.days,
         data_base_dir=args.data_base_dir,
+        neg_pos_ratio=args.neg_pos_ratio,
         num_samples=args.num_samples
     )
     print(f"Loaded {len(train_df)} train samples (for vocab)")
+    print(f"Loaded {len(val_df)} val samples (for vocab)")
     print(f"Loaded {len(test_df)} test samples (for verification)")
 
     # Load PyTorch model
@@ -97,9 +123,10 @@ def main():
     trainer = DeepFMTrainer(
         feature_info=feature_info,
         embedding_dim=embedding_dim,
+        dnn_hidden_units=dnn_hidden_units,
         device='cpu'
     )
-    trainer.build_model(train_df)  # Use train_df for correct vocab size
+    trainer.build_model(train_df, val_df)  # Pass val_df for correct vocab size
     trainer.load_best_model(args.model_path)
     trainer.model.eval()
 

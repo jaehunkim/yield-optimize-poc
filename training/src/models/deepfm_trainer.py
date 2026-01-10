@@ -127,12 +127,21 @@ class DeepFMTrainer:
 
         return feature_columns
 
-    def _update_vocab_sizes(self, train_df: pd.DataFrame):
-        """Update vocabulary sizes from actual data"""
+    def _update_vocab_sizes(self, train_df: pd.DataFrame, val_df: pd.DataFrame = None):
+        """Update vocabulary sizes from actual data (train + val to handle downsampling)"""
         updated_columns = []
         for col in self.feature_columns:
             if isinstance(col, SparseFeat):
-                actual_vocab_size = train_df[col.name].max() + 1
+                # Get max value from train
+                max_train = train_df[col.name].max()
+
+                # If val_df provided, also check val (important for downsampled train sets)
+                if val_df is not None:
+                    max_val = val_df[col.name].max()
+                    actual_vocab_size = max(max_train, max_val) + 1
+                else:
+                    actual_vocab_size = max_train + 1
+
                 updated_columns.append(
                     SparseFeat(col.name, vocabulary_size=actual_vocab_size,
                              embedding_dim=col.embedding_dim)
@@ -141,10 +150,10 @@ class DeepFMTrainer:
                 updated_columns.append(col)
         self.feature_columns = updated_columns
 
-    def build_model(self, train_df: pd.DataFrame):
+    def build_model(self, train_df: pd.DataFrame, val_df: pd.DataFrame = None):
         """Build DeepFM model"""
-        # Update vocab sizes from data
-        self._update_vocab_sizes(train_df)
+        # Update vocab sizes from data (include val to handle downsampling)
+        self._update_vocab_sizes(train_df, val_df)
 
         # Create model with dropout
         self.model = DeepFM(
@@ -228,12 +237,13 @@ class DeepFMTrainer:
             val_df: pd.DataFrame,
             epochs: int = 10,
             early_stopping_patience: int = 3,
-            save_dir: str = 'training/models'):
+            save_dir: str = 'training/models',
+            neg_pos_ratio: int = None):
         """Train DeepFM model"""
 
-        # Build model
+        # Build model (pass val_df to compute correct vocab sizes for downsampled data)
         if self.model is None:
-            self.build_model(train_df)
+            self.build_model(train_df, val_df)
 
         # Create datasets
         train_dataset = CTRDataset(train_df, self.feature_info)
@@ -299,7 +309,14 @@ class DeepFMTrainer:
                 # Save best model with hyperparameters in filename
                 save_path = Path(save_dir)
                 save_path.mkdir(parents=True, exist_ok=True)
-                model_filename = f'deepfm_emb{self.embedding_dim}_lr{self.learning_rate}_best.pth'
+
+                # Build filename with DNN hidden and neg_pos_ratio
+                dnn_str = "".join(str(h) for h in self.dnn_hidden_units)
+                if neg_pos_ratio is not None:
+                    model_filename = f'deepfm_emb{self.embedding_dim}_lr{self.learning_rate}_dnn{dnn_str}_neg{neg_pos_ratio}_best.pth'
+                else:
+                    model_filename = f'deepfm_emb{self.embedding_dim}_lr{self.learning_rate}_dnn{dnn_str}_best.pth'
+
                 torch.save(self.model.state_dict(), save_path / model_filename)
                 print(f"  -> New best model saved: {model_filename} (AUC: {best_auc:.4f})")
             else:

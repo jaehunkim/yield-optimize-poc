@@ -1,5 +1,13 @@
 #!/bin/bash
 # ONNX Export 및 검증 스크립트
+#
+# Usage:
+#   ./export_onnx.sh [CAMPAIGN] [MODEL_PATH] [NEG_POS_RATIO]
+#
+# Examples:
+#   ./export_onnx.sh 2259                                                      # Use default model (original distribution)
+#   ./export_onnx.sh 2259 training/models/deepfm_emb8_lr0.0001_best.pth        # Specify model (original distribution)
+#   ./export_onnx.sh 2259 training/models/deepfm_emb8_lr0.0001_best.pth 200    # Use downsampled data (1:200)
 
 set -e
 
@@ -17,12 +25,18 @@ echo "=== ONNX Export and Verification Script ==="
 
 # Default parameters
 CAMPAIGN=${1:-2259}
-DAYS=${2:-3}
-MODEL_PATH=${3:-training/models/deepfm_emb8_lr0.0005_best.pth}
+MODEL_PATH=${2:-training/models/deepfm_emb8_lr0.0001_dnn25612864_best.pth}
+NEG_POS_RATIO=${3:-}  # Optional: use downsampled data (e.g., 100 or 200)
+DNN_HIDDEN=${4:-"256,128,64"}  # DNN hidden layer sizes (comma-separated)
 
 echo "Campaign: $CAMPAIGN"
-echo "Days: $DAYS"
 echo "Model path: $MODEL_PATH"
+echo "DNN hidden: $DNN_HIDDEN"
+if [ -n "$NEG_POS_RATIO" ]; then
+    echo "Using downsampled data: 1:$NEG_POS_RATIO"
+else
+    echo "Using original distribution data"
+fi
 echo ""
 
 # Activate virtual environment
@@ -34,20 +48,37 @@ fi
 
 # Step 1: Export to ONNX
 echo "=== Step 1: Exporting to ONNX ==="
-python training/src/export/export_onnx.py \
-    --campaign $CAMPAIGN \
-    --days $DAYS \
-    --model-path "$MODEL_PATH"
+if [ -n "$NEG_POS_RATIO" ]; then
+    python training/src/export/export_onnx.py \
+        --campaign $CAMPAIGN \
+        --model-path "$MODEL_PATH" \
+        --neg-pos-ratio $NEG_POS_RATIO \
+        --dnn-hidden "$DNN_HIDDEN"
+else
+    python training/src/export/export_onnx.py \
+        --campaign $CAMPAIGN \
+        --model-path "$MODEL_PATH" \
+        --dnn-hidden "$DNN_HIDDEN"
+fi
 
 echo ""
 
 # Step 2: Verify ONNX model
 echo "=== Step 2: Verifying ONNX Model ==="
-python training/src/export/verify_onnx.py \
-    --campaign $CAMPAIGN \
-    --days $DAYS \
-    --model-path "$MODEL_PATH" \
-    --num-samples 1000
+if [ -n "$NEG_POS_RATIO" ]; then
+    python training/src/export/verify_onnx.py \
+        --campaign $CAMPAIGN \
+        --model-path "$MODEL_PATH" \
+        --neg-pos-ratio $NEG_POS_RATIO \
+        --dnn-hidden "$DNN_HIDDEN" \
+        --num-samples 1000
+else
+    python training/src/export/verify_onnx.py \
+        --campaign $CAMPAIGN \
+        --model-path "$MODEL_PATH" \
+        --dnn-hidden "$DNN_HIDDEN" \
+        --num-samples 1000
+fi
 
 echo ""
 echo "=== ONNX Export Complete ==="

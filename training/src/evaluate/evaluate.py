@@ -36,8 +36,9 @@ def find_latest_model(model_dir: str = "training/models", embedding_dim: int = 8
     if not model_path.exists():
         return None
 
-    # Find all model files matching pattern: deepfm_emb{embedding_dim}_lr*_best.pth
-    pattern = f"deepfm_emb{embedding_dim}_lr*_best.pth"
+    # Find all model files matching pattern: deepfm_emb{embedding_dim}_*_best.pth
+    # Supports both old format (deepfm_emb8_lr0.0001_best.pth) and new format (deepfm_emb8_lr0.0001_dnn12864_neg200_best.pth)
+    pattern = f"deepfm_emb{embedding_dim}_*_best.pth"
     model_files = list(model_path.glob(pattern))
 
     if not model_files:
@@ -50,17 +51,27 @@ def find_latest_model(model_dir: str = "training/models", embedding_dim: int = 8
 
 
 def load_processed_data(campaign_id: int,
-                       data_base_dir: str = "training/data/processed"):
+                       data_base_dir: str = "training/data/processed",
+                       neg_pos_ratio: int = None):
     """전처리된 데이터 로드 (캠페인별 디렉토리)"""
-    data_path = Path(data_base_dir) / f"campaign_{campaign_id}"
+    # Determine directory based on neg_pos_ratio
+    if neg_pos_ratio is not None:
+        dir_name = f"campaign_{campaign_id}_neg{neg_pos_ratio}"
+    else:
+        dir_name = f"campaign_{campaign_id}"
+
+    data_path = Path(data_base_dir) / dir_name
 
     print(f"\n=== Loading Data from {data_path} ===")
+    if neg_pos_ratio is not None:
+        print(f"Using downsampled data (1:{neg_pos_ratio} ratio)")
 
     if not data_path.exists():
         raise FileNotFoundError(
             f"Data not found at {data_path}. "
             f"Run load_data.py first: python training/src/data/load_data.py "
             f"--campaign {campaign_id}"
+            + (f" --neg-pos-ratio {neg_pos_ratio}" if neg_pos_ratio else "")
         )
 
     train_df = pd.read_csv(data_path / "train.csv")
@@ -96,8 +107,16 @@ def main():
                        help='Device to use')
     parser.add_argument('--embedding-dim', type=int, default=8,
                        help='Embedding dimension (Phase 1 optimal: 8)')
+    parser.add_argument('--dnn-hidden', type=str, default='256,128,64',
+                       help='DNN hidden units (comma-separated)')
+    parser.add_argument('--neg-pos-ratio', type=int, default=None,
+                       help='Negative to positive ratio for downsampled data (e.g., 100 for 100:1). '
+                            'If not set, uses original distribution.')
 
     args = parser.parse_args()
+
+    # Parse DNN hidden units
+    dnn_hidden_units = tuple(map(int, args.dnn_hidden.split(',')))
 
     # Auto-find latest model if not specified
     if args.model_path is None:
@@ -114,26 +133,29 @@ def main():
     print("=" * 60)
     print(f"Model: {args.model_path}")
     print(f"Embedding dim: {args.embedding_dim}")
+    print(f"DNN hidden: {dnn_hidden_units}")
     print(f"Device: {args.device}")
     print("=" * 60)
 
     # Load data
     train_df, val_df, test_df, feature_info = load_processed_data(
         campaign_id=args.campaign,
-        data_base_dir=args.data_base_dir
+        data_base_dir=args.data_base_dir,
+        neg_pos_ratio=args.neg_pos_ratio
     )
 
     # Initialize trainer
     trainer = DeepFMTrainer(
         feature_info=feature_info,
         embedding_dim=args.embedding_dim,
+        dnn_hidden_units=dnn_hidden_units,
         batch_size=args.batch_size,
         device=args.device,
         num_workers=args.num_workers
     )
 
-    # Build model and load weights
-    trainer.build_model(train_df)
+    # Build model and load weights (pass val_df for correct vocab sizes)
+    trainer.build_model(train_df, val_df)
     trainer.load_best_model(args.model_path)
 
     # Evaluate on all sets

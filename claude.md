@@ -53,15 +53,30 @@ training/
 3. **에러 핸들링**: 예상 가능한 케이스만 (edge case 과도하게 처리 X)
 4. **테스트**: Phase 1에서는 생략 (시간 제약)
 5. **문서화**: 왜 이렇게 했는지 간단히 (phase1_results.md에 기록)
+6. **Shell 스크립트 작성 시 필수사항**:
+   - 프로젝트 루트를 자동으로 찾고 이동: `SCRIPT_DIR`, `PROJECT_ROOT` 사용
+   - PYTHONPATH 설정: `export PYTHONPATH="$PROJECT_ROOT:$PYTHONPATH"`
+   - 어디서 실행해도 동작하도록 경로 독립성 보장
+   - 참고: `training/scripts/validate_pipeline.sh` 템플릿
 
 ## 현재 진행 상황
 
+**Phase 1 완료** ✅
+
 - [x] 환경 설정 (pyenv, venv, requirements.txt)
 - [x] Kaggle 다운로드 스크립트
-- [ ] 데이터 로딩 (load_data.py)
-- [ ] DeepFM 학습 로직 (deepfm_trainer.py)
-- [ ] 학습 스크립트 (train.py)
-- [ ] 평가 스크립트 (evaluate.py)
+- [x] 데이터 로딩 (load_data.py) - Campaign/days 서브디렉토리 구조
+- [x] 파이프라인 검증 (pipeline.py)
+  - One-Hot Encoding baseline: Test AUC 0.7068
+- [x] DeepFM 학습 로직 (deepfm_trainer.py) - MPS 가속 + Early stopping
+- [x] 학습 스크립트 (train.py, train_deepfm.sh)
+- [x] 평가 스크립트 (evaluate.py, evaluate_deepfm.sh)
+- [x] 모델 파일명 자동화 (하이퍼파라미터 포함 + 자동 파싱)
+- [x] 실험 2회 완료:
+  - Exp 1 (emb=16, lr=0.001): Test AUC 0.7191
+  - **Exp 2 (emb=8, lr=0.0005): Test AUC 0.7503** (최종 모델)
+
+**다음 단계**: Phase 2 (ONNX 변환 및 Rust DSP 엔진)
 
 ## 참고 문서
 
@@ -71,5 +86,6 @@ training/
 
 **리서치 자료** (`docs/research/`):
 - [iPinYou Benchmark](docs/research/ipinyou-benchmark.md) - 논문 벤치마크, 데이터셋 통계
+- [2014 Benchmark Paper (PDF)](docs/research/2014-bench-bottomline.pdf) - 원본 논문
 
 **중요**: 구현 시 `docs/research/` 폴더의 벤치마크 정보를 주기적으로 참조하여 목표치 및 데이터 특성을 확인할 것

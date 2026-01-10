@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from training.src.data.load_data import iPinYouDataLoader
 
 
-def load_and_process_data(campaign_id: int, days: int, output_dir: str):
+def load_and_process_data(campaign_id: int, days: int, output_base_dir: str):
     """데이터 로딩 및 전처리"""
     print(f"\n=== Loading Campaign {campaign_id} ({days} days) ===")
 
@@ -48,9 +48,14 @@ def load_and_process_data(campaign_id: int, days: int, output_dir: str):
     data, feature_info = loader.prepare_features(data)
 
     # Save processed data
-    loader.save_processed_data(data, feature_info, output_dir)
+    output_path = loader.save_processed_data(
+        data, feature_info,
+        campaign_id=campaign_id,
+        num_days=days,
+        output_base_dir=output_base_dir
+    )
 
-    return True
+    return output_path
 
 
 def load_processed_data(data_dir: str = "training/data/processed"):
@@ -177,37 +182,36 @@ def train_baseline(train_df, val_df, test_df, feature_info):
 
 def main():
     parser = argparse.ArgumentParser(description='Load data and validate pipeline with LR baseline')
-    parser.add_argument('--campaign', type=int, default=1458,
-                       help='Campaign ID (default: 1458 for easy validation)')
+    parser.add_argument('--campaign', type=int, default=2259,
+                       help='Campaign ID (default: 2259)')
     parser.add_argument('--days', type=int, default=3,
                        help='Number of days to load (default: 3)')
-    parser.add_argument('--data-dir', type=str, default='training/data/processed',
-                       help='Processed data directory')
-    parser.add_argument('--skip-load', action='store_true',
-                       help='Skip data loading (use existing processed data)')
+    parser.add_argument('--data-base-dir', type=str, default='training/data/processed',
+                       help='Base processed data directory')
     parser.add_argument('--force-reload', action='store_true',
                        help='Force reload data even if cached')
     args = parser.parse_args()
 
-    # Step 1: Load and process data (unless skip-load or already exists)
-    data_path = Path(args.data_dir)
-    cache_exists = (data_path / "train.csv").exists() and \
-                   (data_path / "val.csv").exists() and \
-                   (data_path / "test.csv").exists() and \
-                   (data_path / "feature_info.pkl").exists()
+    # Step 1: Determine data directory
+    data_dir = Path(args.data_base_dir) / f"campaign_{args.campaign}" / f"{args.days}days"
 
-    if args.skip_load:
-        print("Skipping data loading (--skip-load flag)")
-    elif cache_exists and not args.force_reload:
-        print(f"Using cached processed data in {args.data_dir}")
+    # Check if data already exists
+    cache_exists = (data_dir / "train.csv").exists() and \
+                   (data_dir / "val.csv").exists() and \
+                   (data_dir / "test.csv").exists() and \
+                   (data_dir / "feature_info.pkl").exists()
+
+    if cache_exists and not args.force_reload:
+        print(f"Using cached processed data in {data_dir}")
         print("(Use --force-reload to reload from raw data)")
     else:
         if args.force_reload:
             print("Force reloading data from raw files...")
-        load_and_process_data(args.campaign, args.days, args.data_dir)
+        output_path = load_and_process_data(args.campaign, args.days, args.data_base_dir)
+        data_dir = Path(output_path)
 
     # Step 2: Load processed data
-    train_df, val_df, test_df, feature_info = load_processed_data(args.data_dir)
+    train_df, val_df, test_df, feature_info = load_processed_data(str(data_dir))
 
     # Step 3: Check data quality
     check_data_quality(train_df, val_df, test_df, feature_info)

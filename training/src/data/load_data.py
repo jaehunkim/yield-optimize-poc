@@ -223,16 +223,21 @@ class iPinYouDataLoader:
     def save_processed_data(self,
                            data: pd.DataFrame,
                            feature_info: Dict,
-                           output_dir: str = "training/data/processed"):
+                           campaign_id: int,
+                           num_days: int,
+                           output_base_dir: str = "training/data/processed"):
         """
-        전처리된 데이터 저장
+        전처리된 데이터 저장 (캠페인/days별 서브디렉토리)
 
         Args:
             data: Processed DataFrame
             feature_info: Feature information dictionary
-            output_dir: Output directory
+            campaign_id: Campaign ID
+            num_days: Number of days
+            output_base_dir: Base output directory
         """
-        output_path = Path(output_dir)
+        # Create campaign/days subdirectory
+        output_path = Path(output_base_dir) / f"campaign_{campaign_id}" / f"{num_days}days"
         output_path.mkdir(parents=True, exist_ok=True)
 
         # Sort by timestamp to ensure chronological order
@@ -261,7 +266,8 @@ class iPinYouDataLoader:
         with open(output_path / "feature_info.pkl", 'wb') as f:
             pickle.dump(feature_info, f)
 
-        print(f"Saved processed data to {output_dir}")
+        print(f"Saved processed data to {output_path}")
+        return str(output_path)
 
 
 def main():
@@ -274,9 +280,19 @@ def main():
     parser.add_argument('--days', type=int, default=3,
                        help='Number of days to load (default: 3)')
     parser.add_argument('--output-dir', type=str, default='training/data/processed',
-                       help='Output directory for processed data')
+                       help='Base output directory')
 
     args = parser.parse_args()
+
+    # Check if data already exists
+    expected_path = Path(args.output_dir) / f"campaign_{args.campaign}" / f"{args.days}days"
+    if (expected_path / "train.csv").exists() and \
+       (expected_path / "val.csv").exists() and \
+       (expected_path / "test.csv").exists() and \
+       (expected_path / "feature_info.pkl").exists():
+        print(f"Data already exists at {expected_path}")
+        print("Use --force to reload")
+        return
 
     # Load data
     loader = iPinYouDataLoader(campaign_id=args.campaign)
@@ -297,9 +313,14 @@ def main():
     data, feature_info = loader.prepare_features(data)
 
     # Save
-    loader.save_processed_data(data, feature_info, args.output_dir)
+    output_path = loader.save_processed_data(
+        data, feature_info,
+        campaign_id=args.campaign,
+        num_days=args.days,
+        output_base_dir=args.output_dir
+    )
 
-    print("Done!")
+    print(f"Done! Data saved to {output_path}")
 
 
 if __name__ == '__main__':

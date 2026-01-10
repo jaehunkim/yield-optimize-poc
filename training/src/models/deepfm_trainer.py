@@ -1,11 +1,11 @@
 """
-DeepFM Trainer with M2 MPS support and multiprocessing
+DeepFM Trainer with GPU acceleration support
 
 Key optimizations:
-- M2 GPU acceleration via MPS (Metal Performance Shaders)
+- GPU acceleration via CUDA (NVIDIA) or MPS (Apple M-series)
 - Multiprocessing data loading (num_workers > 0)
-- Mixed precision training (optional)
-- Gradient accumulation for larger effective batch sizes
+- Pin memory for faster CUDA data transfer
+- Auto device detection (CUDA > MPS > CPU)
 """
 
 import pickle
@@ -51,7 +51,9 @@ class DeepFMTrainer:
                  feature_info: Dict,
                  embedding_dim: int = 16,
                  dnn_hidden_units: Tuple[int, ...] = (256, 128, 64),
+                 dnn_dropout: float = 0.5,
                  learning_rate: float = 0.001,
+                 weight_decay: float = 1e-5,
                  batch_size: int = 512,
                  device: str = 'auto',
                  num_workers: int = 4):
@@ -60,7 +62,9 @@ class DeepFMTrainer:
             feature_info: Feature metadata from load_data.py
             embedding_dim: Embedding dimension for sparse features
             dnn_hidden_units: DNN hidden layer sizes
+            dnn_dropout: Dropout rate for DNN layers
             learning_rate: Learning rate
+            weight_decay: L2 regularization strength
             batch_size: Batch size
             device: 'auto', 'mps', 'cuda', or 'cpu'
             num_workers: Number of DataLoader workers (multiprocessing)
@@ -68,23 +72,29 @@ class DeepFMTrainer:
         self.feature_info = feature_info
         self.embedding_dim = embedding_dim
         self.dnn_hidden_units = dnn_hidden_units
+        self.dnn_dropout = dnn_dropout
         self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
         self.batch_size = batch_size
         self.num_workers = num_workers
 
-        # Auto-detect device
+        # Auto-detect device (prioritize CUDA over MPS)
         if device == 'auto':
-            if torch.backends.mps.is_available():
-                self.device = torch.device('mps')
-                print("Using MPS (M2 GPU acceleration)")
-            elif torch.cuda.is_available():
+            if torch.cuda.is_available():
                 self.device = torch.device('cuda')
-                print("Using CUDA")
+                gpu_name = torch.cuda.get_device_name(0)
+                gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+                print(f"Using CUDA - {gpu_name} ({gpu_memory:.1f} GB)")
+            elif torch.backends.mps.is_available():
+                self.device = torch.device('mps')
+                print("Using MPS (Apple M-series GPU acceleration)")
             else:
                 self.device = torch.device('cpu')
                 print("Using CPU")
         else:
             self.device = torch.device(device)
+            if device == 'cuda' and torch.cuda.is_available():
+                print(f"Using CUDA - {torch.cuda.get_device_name(0)}")
 
         # Build feature columns for DeepCTR
         self.feature_columns = self._build_feature_columns()
@@ -136,18 +146,23 @@ class DeepFMTrainer:
         # Update vocab sizes from data
         self._update_vocab_sizes(train_df)
 
-        # Create model
+        # Create model with dropout
         self.model = DeepFM(
             linear_feature_columns=self.feature_columns,
             dnn_feature_columns=self.feature_columns,
             dnn_hidden_units=self.dnn_hidden_units,
+            dnn_dropout=self.dnn_dropout,
             device=self.device
         )
 
-        # Optimizer
-        self.optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
+        # Optimizer with weight decay (L2 regularization)
+        self.optimizer = optim.Adam(
+            self.model.parameters(),
+            lr=self.learning_rate,
+            weight_decay=self.weight_decay
+        )
 
-        print(f"Model built with {sum(p.numel() for p in self.model.parameters())} parameters")
+        print(f"\nModel built with {sum(p.numel() for p in self.model.parameters())} parameters")
 
     def train_epoch(self, train_loader: DataLoader) -> Tuple[float, float]:
         """Train for one epoch"""
@@ -225,7 +240,7 @@ class DeepFMTrainer:
         val_dataset = CTRDataset(val_df, self.feature_info)
 
         # Create dataloaders with multiprocessing
-        # pin_memory only for CUDA (MPS doesn't support it yet)
+        # pin_memory enables faster CUDA data transfer (not supported by MPS)
         use_pin_memory = self.device.type == 'cuda'
 
         train_loader = DataLoader(

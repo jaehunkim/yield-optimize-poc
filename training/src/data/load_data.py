@@ -25,7 +25,9 @@ def _load_single_day(args):
     filepath, campaign_id = args
 
     with bz2.open(filepath, 'rt') as f:
-        df = pd.read_csv(f, sep='\t', header=None, names=[
+        df = pd.read_csv(f, sep='\t', header=None,
+                        low_memory=False,  # Suppress dtype warning
+                        names=[
             'bid_id', 'timestamp', 'log_type', 'ipinyou_id', 'user_agent',
             'ip', 'region', 'city', 'ad_exchange', 'domain', 'url',
             'anon_url_id', 'ad_slot_id', 'ad_slot_width', 'ad_slot_height',
@@ -163,6 +165,60 @@ class iPinYouDataLoader:
 
         return imp_data
 
+    def load_testing_data(self) -> pd.DataFrame:
+        """
+        Load official iPinYou testing/leaderboard data
+
+        Testing data format (26 fields):
+        - First 24 fields: same as impression log
+        - Field 25: number of clicks (C) - 0, 1, or more
+        - Field 26: has conversion (V) - 0 or 1
+
+        Returns:
+            DataFrame with testing data including click labels
+        """
+        # Determine testing file based on season
+        testing_season = self.season.replace('training', 'testing')
+
+        # Find testing file
+        testing_files = list(self.data_dir.glob(f"{testing_season}/leaderboard.test.data.*.txt.bz2"))
+
+        if not testing_files:
+            raise FileNotFoundError(
+                f"No testing data found in {self.data_dir / testing_season}/"
+            )
+
+        testing_file = testing_files[0]
+        print(f"Loading testing data from {testing_file.name}...")
+
+        # Load testing data (26 fields)
+        with bz2.open(testing_file, 'rt') as f:
+            df = pd.read_csv(f, sep='\t', header=None,
+                           low_memory=False,  # Suppress dtype warning
+                           names=[
+                'bid_id', 'timestamp', 'log_type', 'ipinyou_id', 'user_agent',
+                'ip', 'region', 'city', 'ad_exchange', 'domain', 'url',
+                'anon_url_id', 'ad_slot_id', 'ad_slot_width', 'ad_slot_height',
+                'ad_slot_visibility', 'ad_slot_format', 'ad_slot_floor_price',
+                'creative_id', 'bidding_price', 'paying_price', 'key_page_url',
+                'advertiser_id', 'user_tags', 'click_count', 'has_conversion'
+            ])
+
+        # Filter by campaign
+        df = df[df['advertiser_id'] == self.campaign_id].copy()
+
+        # Convert click_count to binary click label (1 if any clicks, 0 otherwise)
+        df['click'] = (df['click_count'] > 0).astype(int)
+
+        # Drop the extra columns we don't need for CTR prediction
+        df = df.drop(columns=['click_count', 'has_conversion'])
+
+        click_rate = df['click'].mean()
+        print(f"Loaded {len(df)} testing impressions (Campaign {self.campaign_id})")
+        print(f"Testing click rate: {click_rate:.4f} ({df['click'].sum()} clicks)")
+
+        return df
+
     def prepare_features(self, data: pd.DataFrame) -> Tuple[pd.DataFrame, Dict]:
         """
         DeepFM을 위한 feature 준비
@@ -221,52 +277,55 @@ class iPinYouDataLoader:
         return data, feature_info
 
     def save_processed_data(self,
-                           data: pd.DataFrame,
+                           train_data: pd.DataFrame,
+                           test_data: pd.DataFrame,
                            feature_info: Dict,
                            campaign_id: int,
-                           num_days: int,
-                           output_base_dir: str = "training/data/processed"):
+                           output_base_dir: str = "training/data/processed",
+                           val_split: float = 0.2):
         """
-        전처리된 데이터 저장 (캠페인/days별 서브디렉토리)
+        전처리된 데이터 저장 (캠페인별 디렉토리)
 
         Args:
-            data: Processed DataFrame
+            train_data: Processed training DataFrame (from training set)
+            test_data: Processed testing DataFrame (from official testing set)
             feature_info: Feature information dictionary
             campaign_id: Campaign ID
-            num_days: Number of days
             output_base_dir: Base output directory
+            val_split: Validation split ratio from training data (default: 0.2)
         """
-        # Create campaign/days subdirectory
-        output_path = Path(output_base_dir) / f"campaign_{campaign_id}" / f"{num_days}days"
+        # Create campaign subdirectory
+        output_path = Path(output_base_dir) / f"campaign_{campaign_id}"
         output_path.mkdir(parents=True, exist_ok=True)
 
-        # Sort by timestamp to ensure chronological order
-        data = data.sort_values('timestamp').reset_index(drop=True)
+        # Sort training data by timestamp to ensure chronological order
+        train_data = train_data.sort_values('timestamp').reset_index(drop=True)
 
-        # Split train/val/test chronologically (no data leakage)
-        n = len(data)
-        train_end = int(n * 0.72)
-        val_end = int(n * 0.80)
+        # Split training data into train/val chronologically (no data leakage)
+        n = len(train_data)
+        train_end = int(n * (1 - val_split))
 
-        train_data = data.iloc[:train_end]
-        val_data = data.iloc[train_end:val_end]
-        test_data = data.iloc[val_end:]
+        final_train = train_data.iloc[:train_end]
+        final_val = train_data.iloc[train_end:]
 
-        print(f"Train: {len(train_data)}, Val: {len(val_data)}, Test: {len(test_data)}")
-        print(f"Train period: {train_data['timestamp'].min()} ~ {train_data['timestamp'].max()}")
-        print(f"Val period: {val_data['timestamp'].min()} ~ {val_data['timestamp'].max()}")
+        print(f"\n=== Data Split (Using Official Testing Set) ===")
+        print(f"Train: {len(final_train)} ({len(final_train)/n*100:.1f}%)")
+        print(f"Val: {len(final_val)} ({len(final_val)/n*100:.1f}%)")
+        print(f"Test: {len(test_data)} (official leaderboard set)")
+        print(f"\nTrain period: {final_train['timestamp'].min()} ~ {final_train['timestamp'].max()}")
+        print(f"Val period: {final_val['timestamp'].min()} ~ {final_val['timestamp'].max()}")
         print(f"Test period: {test_data['timestamp'].min()} ~ {test_data['timestamp'].max()}")
 
         # Save
-        train_data.to_csv(output_path / "train.csv", index=False)
-        val_data.to_csv(output_path / "val.csv", index=False)
+        final_train.to_csv(output_path / "train.csv", index=False)
+        final_val.to_csv(output_path / "val.csv", index=False)
         test_data.to_csv(output_path / "test.csv", index=False)
 
         # Save feature info
         with open(output_path / "feature_info.pkl", 'wb') as f:
             pickle.dump(feature_info, f)
 
-        print(f"Saved processed data to {output_path}")
+        print(f"\nSaved processed data to {output_path}")
         return str(output_path)
 
 
@@ -277,15 +336,15 @@ def main():
     parser = argparse.ArgumentParser(description='Load iPinYou dataset')
     parser.add_argument('--campaign', type=int, default=2259,
                        help='Campaign ID (2259 or 3386)')
-    parser.add_argument('--days', type=int, default=3,
-                       help='Number of days to load (default: 3)')
     parser.add_argument('--output-dir', type=str, default='training/data/processed',
                        help='Base output directory')
+    parser.add_argument('--val-split', type=float, default=0.2,
+                       help='Validation split ratio (default: 0.2)')
 
     args = parser.parse_args()
 
     # Check if data already exists
-    expected_path = Path(args.output_dir) / f"campaign_{args.campaign}" / f"{args.days}days"
+    expected_path = Path(args.output_dir) / f"campaign_{args.campaign}"
     if (expected_path / "train.csv").exists() and \
        (expected_path / "val.csv").exists() and \
        (expected_path / "test.csv").exists() and \
@@ -297,30 +356,43 @@ def main():
     # Load data
     loader = iPinYouDataLoader(campaign_id=args.campaign)
 
-    # Use first N days
+    # Load ALL available training days for this campaign
+    print(f"\n{'='*60}")
+    print(f"Loading iPinYou Dataset - Campaign {args.campaign}")
+    print(f"{'='*60}")
+
+    # Load training impressions (all days)
+    print(f"\n--- Loading Training Data ---")
+    train_data = loader.load_campaign_data(days=None)  # None = load all days
+
+    # Add click labels to training data
     imp_files = sorted(Path(loader.data_dir).glob(f"{loader.season}/imp.*.txt.bz2"))
-    days = [f.stem.split('.')[1] for f in imp_files[:args.days]]
+    days = [f.stem.split('.')[1] for f in imp_files]
+    train_data = loader.add_click_labels(train_data, days)
 
-    print(f"Loading {len(days)} days: {days}")
+    # Prepare features for training data
+    train_data, feature_info = loader.prepare_features(train_data)
 
-    # Load impressions
-    data = loader.load_campaign_data(days)
+    # Load official testing data
+    print(f"\n--- Loading Official Testing Data ---")
+    test_data = loader.load_testing_data()
 
-    # Add click labels
-    data = loader.add_click_labels(data, days)
+    # Prepare features for testing data (using same feature_info for consistency)
+    test_data, _ = loader.prepare_features(test_data)
 
-    # Prepare features
-    data, feature_info = loader.prepare_features(data)
-
-    # Save
+    # Save train/val/test splits
     output_path = loader.save_processed_data(
-        data, feature_info,
+        train_data=train_data,
+        test_data=test_data,
+        feature_info=feature_info,
         campaign_id=args.campaign,
-        num_days=args.days,
-        output_base_dir=args.output_dir
+        output_base_dir=args.output_dir,
+        val_split=args.val_split
     )
 
+    print(f"\n{'='*60}")
     print(f"Done! Data saved to {output_path}")
+    print(f"{'='*60}")
 
 
 if __name__ == '__main__':

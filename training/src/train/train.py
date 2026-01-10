@@ -18,18 +18,18 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from training.src.models.deepfm_trainer import DeepFMTrainer
 
 
-def load_processed_data(campaign_id: int, num_days: int,
+def load_processed_data(campaign_id: int,
                        data_base_dir: str = "training/data/processed"):
-    """전처리된 데이터 로드 (캠페인/days 서브디렉토리)"""
-    data_path = Path(data_base_dir) / f"campaign_{campaign_id}" / f"{num_days}days"
+    """전처리된 데이터 로드 (캠페인별 디렉토리)"""
+    data_path = Path(data_base_dir) / f"campaign_{campaign_id}"
 
     print(f"\n=== Loading Data from {data_path} ===")
 
     if not data_path.exists():
         raise FileNotFoundError(
             f"Data not found at {data_path}. "
-            f"Run pipeline.py first: python training/src/validate/pipeline.py "
-            f"--campaign {campaign_id} --days {num_days}"
+            f"Run load_data.py first: python training/src/data/load_data.py "
+            f"--campaign {campaign_id}"
         )
 
     train_df = pd.read_csv(data_path / "train.csv")
@@ -53,8 +53,6 @@ def main():
     parser = argparse.ArgumentParser(description='Train DeepFM model')
     parser.add_argument('--campaign', type=int, default=2259,
                        help='Campaign ID')
-    parser.add_argument('--days', type=int, default=3,
-                       help='Number of days')
     parser.add_argument('--data-base-dir', type=str, default='training/data/processed',
                        help='Base processed data directory')
     parser.add_argument('--save-dir', type=str, default='training/models',
@@ -65,8 +63,12 @@ def main():
                        help='Embedding dimension')
     parser.add_argument('--dnn-hidden', type=str, default='256,128,64',
                        help='DNN hidden units (comma-separated)')
+    parser.add_argument('--dnn-dropout', type=float, default=0.5,
+                       help='Dropout rate for DNN layers')
     parser.add_argument('--lr', type=float, default=0.001,
                        help='Learning rate')
+    parser.add_argument('--weight-decay', type=float, default=1e-5,
+                       help='L2 regularization strength')
     parser.add_argument('--batch-size', type=int, default=512,
                        help='Batch size')
     parser.add_argument('--epochs', type=int, default=15,
@@ -92,7 +94,9 @@ def main():
     print(f"Hyperparameters:")
     print(f"  Embedding dim: {args.embedding_dim}")
     print(f"  DNN hidden: {dnn_hidden_units}")
+    print(f"  DNN dropout: {args.dnn_dropout}")
     print(f"  Learning rate: {args.lr}")
+    print(f"  Weight decay: {args.weight_decay}")
     print(f"  Batch size: {args.batch_size}")
     print(f"  Epochs: {args.epochs}")
     print(f"  Early stopping patience: {args.patience}")
@@ -104,7 +108,6 @@ def main():
     # Load data
     train_df, val_df, test_df, feature_info = load_processed_data(
         campaign_id=args.campaign,
-        num_days=args.days,
         data_base_dir=args.data_base_dir
     )
 
@@ -113,7 +116,9 @@ def main():
         feature_info=feature_info,
         embedding_dim=args.embedding_dim,
         dnn_hidden_units=dnn_hidden_units,
+        dnn_dropout=args.dnn_dropout,
         learning_rate=args.lr,
+        weight_decay=args.weight_decay,
         batch_size=args.batch_size,
         device=args.device,
         num_workers=args.num_workers

@@ -10,6 +10,7 @@ import json
 import pickle
 import sys
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 import torch
@@ -20,13 +21,47 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from training.src.models.deepfm_trainer import DeepFMTrainer, CTRDataset
 
 
-def load_processed_data(campaign_id: int, num_days: int,
+def find_latest_model(model_dir: str = "training/models", embedding_dim: int = 8) -> Optional[str]:
+    """
+    Find the most recent model file for given embedding dimension
+
+    Args:
+        model_dir: Directory containing model files
+        embedding_dim: Embedding dimension to filter by
+
+    Returns:
+        Path to the most recent model file, or None if not found
+    """
+    model_path = Path(model_dir)
+    if not model_path.exists():
+        return None
+
+    # Find all model files matching pattern: deepfm_emb{embedding_dim}_lr*_best.pth
+    pattern = f"deepfm_emb{embedding_dim}_lr*_best.pth"
+    model_files = list(model_path.glob(pattern))
+
+    if not model_files:
+        return None
+
+    # Sort by modification time (most recent first)
+    model_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+
+    return str(model_files[0])
+
+
+def load_processed_data(campaign_id: int,
                        data_base_dir: str = "training/data/processed"):
-    """전처리된 데이터 로드 (캠페인/days 서브디렉토리)"""
-    data_path = Path(data_base_dir) / f"campaign_{campaign_id}" / f"{num_days}days"
+    """전처리된 데이터 로드 (캠페인별 디렉토리)"""
+    data_path = Path(data_base_dir) / f"campaign_{campaign_id}"
+
+    print(f"\n=== Loading Data from {data_path} ===")
 
     if not data_path.exists():
-        raise FileNotFoundError(f"Data not found at {data_path}")
+        raise FileNotFoundError(
+            f"Data not found at {data_path}. "
+            f"Run load_data.py first: python training/src/data/load_data.py "
+            f"--campaign {campaign_id}"
+        )
 
     train_df = pd.read_csv(data_path / "train.csv")
     val_df = pd.read_csv(data_path / "val.csv")
@@ -35,6 +70,10 @@ def load_processed_data(campaign_id: int, num_days: int,
     with open(data_path / "feature_info.pkl", 'rb') as f:
         feature_info = pickle.load(f)
 
+    print(f"Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)}")
+    print(f"Features: {len(feature_info['sparse_features'])} sparse + "
+          f"{len(feature_info['dense_features'])} dense")
+
     return train_df, val_df, test_df, feature_info
 
 
@@ -42,10 +81,8 @@ def main():
     parser = argparse.ArgumentParser(description='Evaluate DeepFM model')
     parser.add_argument('--campaign', type=int, default=2259,
                        help='Campaign ID')
-    parser.add_argument('--days', type=int, default=3,
-                       help='Number of days')
-    parser.add_argument('--model-path', type=str, default='training/models/deepfm_best.pth',
-                       help='Path to model checkpoint')
+    parser.add_argument('--model-path', type=str, default=None,
+                       help='Path to model checkpoint (if not provided, uses latest model)')
     parser.add_argument('--data-base-dir', type=str, default='training/data/processed',
                        help='Base processed data directory')
     parser.add_argument('--output', type=str, default='training/results/evaluation.json',
@@ -57,16 +94,20 @@ def main():
     parser.add_argument('--device', type=str, default='auto',
                        choices=['auto', 'mps', 'cuda', 'cpu'],
                        help='Device to use')
-    parser.add_argument('--embedding-dim', type=int, default=None,
-                       help='Embedding dimension (if None, auto-detect from model filename)')
+    parser.add_argument('--embedding-dim', type=int, default=8,
+                       help='Embedding dimension (Phase 1 optimal: 8)')
 
     args = parser.parse_args()
 
-    # Auto-detect hyperparameters from model filename if not specified
-    if args.embedding_dim is None:
-        parsed_params = DeepFMTrainer.parse_model_filename(args.model_path)
-        args.embedding_dim = parsed_params['embedding_dim']
-        print(f"Auto-detected from filename: embedding_dim={args.embedding_dim}")
+    # Auto-find latest model if not specified
+    if args.model_path is None:
+        args.model_path = find_latest_model(embedding_dim=args.embedding_dim)
+        if args.model_path is None:
+            raise FileNotFoundError(
+                f"No model found for embedding_dim={args.embedding_dim}. "
+                f"Please specify --model-path explicitly."
+            )
+        print(f"Auto-detected latest model: {args.model_path}")
 
     print("=" * 60)
     print("DeepFM Evaluation")
@@ -77,10 +118,8 @@ def main():
     print("=" * 60)
 
     # Load data
-    print("\n=== Loading Data ===")
     train_df, val_df, test_df, feature_info = load_processed_data(
         campaign_id=args.campaign,
-        num_days=args.days,
         data_base_dir=args.data_base_dir
     )
 

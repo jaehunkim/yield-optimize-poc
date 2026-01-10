@@ -61,19 +61,17 @@ echo "Or use the convenience script:"
 echo "  source activate.sh"
 echo ""
 echo "=== Kaggle API Setup ==="
-if [ ! -f ".env" ]; then
-    echo "Creating .env file for Kaggle API token..."
-    echo "Please edit training/.env and add your Kaggle API token."
+if [ ! -f "$PROJECT_ROOT/.kaggle/kaggle.json" ] && [ ! -f ~/.kaggle/kaggle.json ]; then
+    echo "Kaggle credentials not found."
     echo ""
-    echo "Steps to get your token:"
+    echo "To download data, set up Kaggle API credentials:"
     echo "  1. Go to https://www.kaggle.com/account"
-    echo "  2. Scroll to 'API Tokens' section"
-    echo "  3. Click 'Create New Token'"
-    echo "  4. Copy the token (KGAT_...)"
-    echo "  5. Edit training/.env and set KAGGLE_API_TOKEN"
-    echo "  6. Load environment: source training/.env"
+    echo "  2. Scroll to 'API' section"
+    echo "  3. Click 'Create New Token' (downloads kaggle.json)"
+    echo "  4. Move kaggle.json to .kaggle/ (in project root)"
+    echo "  5. Run: chmod 600 .kaggle/kaggle.json"
+elif [ -f "$PROJECT_ROOT/.kaggle/kaggle.json" ]; then
+    echo "Kaggle credentials found at .kaggle/kaggle.json"
 else
-    echo ".env file already exists. Loading Kaggle API token..."
-    source .env
-    echo "Kaggle API token loaded successfully!"
+    echo "Kaggle credentials found at ~/.kaggle/kaggle.json"
 fi

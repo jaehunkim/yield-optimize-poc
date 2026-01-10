@@ -43,15 +43,17 @@
 - `training/data/raw/` 디렉토리
 
 #### 1.1.3 데이터 로딩 및 분할
-- Kaggle 데이터셋은 이미 표준 포맷 (.yzx 파일 등)
-- Campaign 2259 또는 3386 선택
-- train/validation/test 분할 (이미 분할되어 있을 가능성 높음)
-- DeepCTR-PyTorch 입력 형식으로 변환
+- **Raw 데이터 읽기**: Kaggle 데이터셋은 이미 feature 추출된 탭 구분 텍스트 (bz2 압축)
+- **클릭 레이블 추가**: impression 파일 + click 파일 매칭 (bid_id로 조인, set lookup)
+- **DeepCTR 형식 변환**:
+  - Categorical features → pd.Categorical().codes로 정수 인코딩
+  - Numerical features → (x - mean) / std로 정규화
+- **데이터 분할**: 시간순 split (72%/8%/20%) - data leakage 방지
 
 **생성 파일**:
-- `training/scripts/load_data.py` (전처리 → 로딩으로 변경)
-- `training/data/processed/` (필요시 변환된 데이터)
-- `training/data/processed/feature_map.pkl` (feature dictionary)
+- `training/src/data/load_data.py` (iPinYouDataLoader 클래스)
+- `training/data/processed/` (train.csv, val.csv, test.csv)
+- `training/data/processed/feature_info.pkl` (feature 메타데이터)
 
 ### Phase 1.2: 모델 학습 및 평가
 

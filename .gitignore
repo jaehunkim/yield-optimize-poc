@@ -13,6 +13,10 @@ ENV/
 
 # Environment Variables
 .env
+
+# Kaggle Credentials
+.kaggle/
+kaggle.json
 .env.local
 
 # IDE

@@ -14,28 +14,28 @@ if ! command -v kaggle &> /dev/null; then
     exit 1
 fi
 
-# Load Kaggle API token from .env if it exists
-if [ -f "training/.env" ]; then
-    echo "Loading Kaggle API token from .env..."
-    source training/.env
-elif [ -f ".env" ]; then
-    echo "Loading Kaggle API token from .env..."
-    source .env
+# Get project root directory
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# Check if Kaggle credentials are configured (project .kaggle/ or ~/.kaggle/)
+if [ ! -f "$PROJECT_ROOT/.kaggle/kaggle.json" ] && [ ! -f ~/.kaggle/kaggle.json ]; then
+    echo "Error: Kaggle credentials not found."
+    echo ""
+    echo "Please set up Kaggle API credentials:"
+    echo "  1. Go to https://www.kaggle.com/account"
+    echo "  2. Scroll to 'API' section"
+    echo "  3. Click 'Create New Token' (downloads kaggle.json)"
+    echo "  4. Move kaggle.json to .kaggle/ (in project root)"
+    echo "  5. Run: chmod 600 .kaggle/kaggle.json"
+    echo "  6. Run this script again"
+    exit 1
 fi
 
-# Check if Kaggle API token is configured
-if [ -z "$KAGGLE_API_TOKEN" ] && [ ! -f ~/.kaggle/kaggle.json ]; then
-    echo "Error: Kaggle API token not found."
-    echo ""
-    echo "Please set up Kaggle API token:"
-    echo "  1. Go to https://www.kaggle.com/account"
-    echo "  2. Scroll to 'API Tokens' section"
-    echo "  3. Click 'Create New Token'"
-    echo "  4. Copy the token (KGAT_...)"
-    echo "  5. Create training/.env and add: export KAGGLE_API_TOKEN=your_token"
-    echo "  6. Run: source training/.env"
-    echo "  7. Run this script again"
-    exit 1
+# Set KAGGLE_CONFIG_DIR to use project .kaggle/ if it exists
+if [ -f "$PROJECT_ROOT/.kaggle/kaggle.json" ]; then
+    export KAGGLE_CONFIG_DIR="$PROJECT_ROOT/.kaggle"
+    echo "Using Kaggle credentials from $KAGGLE_CONFIG_DIR"
 fi
 
 # Create data directory

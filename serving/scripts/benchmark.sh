@@ -1,5 +1,5 @@
 #!/bin/bash
-# Benchmark script for DeepFM serving
+# Benchmark script for CTR model serving
 # Usage: ./benchmark.sh [single|multi] [duration]
 
 set -e
@@ -10,7 +10,18 @@ DURATION=${2:-30s}
 # Get script directory and project root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-MODEL_PATH="$PROJECT_ROOT/models/deepfm_emb8_lr0.0001_dnn25612864_neg150_best.onnx"
+
+# Model selection via MODEL env var
+# Options: deepfm (default), autoint
+MODEL_TYPE=${MODEL:-deepfm}
+
+if [ "$MODEL_TYPE" == "autoint" ]; then
+    MODEL_PATH="$PROJECT_ROOT/models/autoint_emb64_att3x4_dnn256128_neg150_best.onnx"
+    MODEL_NAME="AutoInt"
+else
+    MODEL_PATH="$PROJECT_ROOT/models/deepfm_emb8_lr0.0001_dnn25612864_neg150_best.onnx"
+    MODEL_NAME="DeepFM"
+fi
 
 # Colors
 RED='\033[0;31m'
@@ -61,7 +72,7 @@ cargo build --release --quiet
 BINARY="$PROJECT_ROOT/target/release/deepfm-serving"
 
 if [ "$MODE" == "single" ]; then
-    log_info "=== Single Process Benchmark ==="
+    log_info "=== Single Process Benchmark ($MODEL_NAME) ==="
     log_info "Starting server on port 3000..."
 
     RUST_LOG=warn $BINARY --port 3000 --model "$MODEL_PATH" &
@@ -69,9 +80,26 @@ if [ "$MODE" == "single" ]; then
     sleep 3
 
     log_info "Running benchmark (duration: $DURATION)..."
+    echo "=============================="
+    log_info "Benchmark Configuration:"
+    echo "  Model:       $MODEL_NAME"
+    echo "  Processes:   1"
+    echo "  Threads:     4"
+    echo "  Connections: 100"
+    echo "  Duration:    $DURATION"
+    echo "=============================="
+
     wrk -t4 -c100 -d$DURATION \
         -s "$SCRIPT_DIR/wrk_predict.lua" \
         http://localhost:3000/predict_raw
+
+    echo "=============================="
+    log_info "Results Summary:"
+    echo "  Model:       $MODEL_NAME"
+    echo "  Mode:        Single Process"
+    echo "  Threads:     4"
+    echo "  Connections: 100"
+    echo "=============================="
 
     kill $SERVER_PID
 
@@ -79,7 +107,7 @@ elif [ "$MODE" == "multi" ]; then
     NUM_PROCESSES=${NUM_PROCESSES:-4}
     BASE_PORT=3001
 
-    log_info "=== Multi-Process Benchmark (${NUM_PROCESSES} processes) ==="
+    log_info "=== Multi-Process Benchmark ($MODEL_NAME, ${NUM_PROCESSES} processes) ==="
 
     # Check if nginx is installed
     if ! command -v nginx &> /dev/null; then
@@ -146,11 +174,30 @@ EOF
     sleep 2
 
     log_info "Running benchmark (duration: $DURATION)..."
-    CONNECTIONS=$((100 * NUM_PROCESSES))
-    THREADS=$((4 * NUM_PROCESSES))
+    # Allow overriding connections and threads via env vars
+    CONNECTIONS=${CONNECTIONS:-$((100 * NUM_PROCESSES))}
+    THREADS=${THREADS:-$((4 * NUM_PROCESSES))}
+
+    echo "=============================="
+    log_info "Benchmark Configuration:"
+    echo "  Model:       $MODEL_NAME"
+    echo "  Processes:   $NUM_PROCESSES"
+    echo "  Threads:     $THREADS"
+    echo "  Connections: $CONNECTIONS"
+    echo "  Duration:    $DURATION"
+    echo "=============================="
+
     wrk -t$THREADS -c$CONNECTIONS -d$DURATION \
         -s "$SCRIPT_DIR/wrk_predict.lua" \
         http://localhost:3000/predict_raw
+
+    echo "=============================="
+    log_info "Results Summary:"
+    echo "  Model:       $MODEL_NAME"
+    echo "  Mode:        Multi-Process ($NUM_PROCESSES processes)"
+    echo "  Threads:     $THREADS"
+    echo "  Connections: $CONNECTIONS"
+    echo "=============================="
 
     # Cleanup
     kill $NGINX_PID
@@ -163,7 +210,17 @@ else
     echo "Usage: $0 [single|multi] [duration]"
     echo "  single - Single process benchmark"
     echo "  multi  - Multi-process benchmark with nginx (default: 4 processes)"
-    echo "           Set NUM_PROCESSES env var to change: NUM_PROCESSES=8 $0 multi"
+    echo ""
+    echo "Environment variables:"
+    echo "  MODEL         - Model to use: deepfm (default) or autoint"
+    echo "  NUM_PROCESSES - Number of processes (default: 4)"
+    echo "  CONNECTIONS   - Number of connections (default: 100 * NUM_PROCESSES)"
+    echo "  THREADS       - Number of threads (default: 4 * NUM_PROCESSES)"
+    echo ""
+    echo "Examples:"
+    echo "  $0 single 30s                            # DeepFM single process"
+    echo "  MODEL=autoint $0 single 30s              # AutoInt single process"
+    echo "  MODEL=autoint NUM_PROCESSES=4 $0 multi 30s"
     exit 1
 fi
 

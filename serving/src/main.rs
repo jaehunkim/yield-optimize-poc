@@ -10,7 +10,7 @@ use tracing_subscriber;
 
 use crate::api::{create_router, AppState};
 use crate::features::FeatureProcessor;
-use crate::model::DeepFMModel;
+use crate::model::{DeepFMModel, ModelConfig};
 
 /// DeepFM CTR prediction serving server
 #[derive(Parser, Debug)]
@@ -23,6 +23,18 @@ struct Args {
     /// Path to the ONNX model file
     #[arg(short, long, default_value = "models/deepfm_emb8_lr0.0001_dnn25612864_neg150_best.onnx")]
     model: String,
+
+    /// Number of intra-op threads (parallelism within operators)
+    #[arg(long, default_value_t = 4)]
+    intra_threads: usize,
+
+    /// Number of inter-op threads (parallelism between operators)
+    #[arg(long, default_value_t = 1)]
+    inter_threads: usize,
+
+    /// Number of sessions in the pool for concurrent inference
+    #[arg(long, default_value_t = 8)]
+    pool_size: usize,
 }
 
 #[tokio::main]
@@ -37,9 +49,15 @@ async fn main() -> Result<()> {
 
     info!("Starting DeepFM serving server...");
 
-    // Load ONNX model
+    // Load ONNX model with optimized configuration
     info!("Loading model from: {}", args.model);
-    let model = DeepFMModel::load(&args.model)
+    let config = ModelConfig {
+        intra_threads: args.intra_threads,
+        inter_threads: args.inter_threads,
+        enable_mem_pattern: true,
+        pool_size: args.pool_size,
+    };
+    let model = DeepFMModel::load_with_config(&args.model, config)
         .context("Failed to load ONNX model")?;
     info!("Model loaded successfully");
 

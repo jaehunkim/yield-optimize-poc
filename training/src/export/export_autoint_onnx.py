@@ -132,8 +132,7 @@ def main():
     print(f"\n=== Exporting to ONNX ===")
     print(f"Output: {args.output_path}")
 
-    # Note: dynamic_axes may cause issues with some models
-    # Using fixed batch size for now
+    # Enable dynamic batch size for efficient batched inference
     torch.onnx.export(
         trainer.model,
         dummy_input,
@@ -143,6 +142,10 @@ def main():
         do_constant_folding=True,
         input_names=['input'],
         output_names=['output'],
+        dynamic_axes={
+            'input': {0: 'batch_size'},
+            'output': {0: 'batch_size'}
+        },
         dynamo=False  # Use legacy exporter for better compatibility
     )
 

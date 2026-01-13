@@ -40,6 +40,20 @@ pub struct RawFeatureRequest {
     pub features: Vec<f32>,
 }
 
+/// Batch feature vector request (for batched inference)
+#[derive(serde::Deserialize)]
+pub struct BatchFeatureRequest {
+    pub batch: Vec<Vec<f32>>,
+}
+
+/// Batch prediction response
+#[derive(Serialize)]
+pub struct BatchPredictionResponse {
+    pub predictions: Vec<f32>,
+    pub batch_size: usize,
+    pub latency_ms: f64,
+}
+
 /// Error response
 #[derive(Serialize)]
 pub struct ErrorResponse {
@@ -52,6 +66,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/health", get(health_check))
         .route("/predict", post(predict))
         .route("/predict_raw", post(predict_raw))
+        .route("/predict_batch", post(predict_batch))
         .with_state(state)
 }
 
@@ -142,4 +157,64 @@ async fn predict_raw(
     tracing::debug!("Prediction completed: CTR={:.6}, latency={:.2}ms", ctr, latency_ms);
 
     Ok(Json(PredictionResponse { ctr, latency_ms }))
+}
+
+/// Batched CTR prediction endpoint (for benchmarking batched inference)
+#[instrument(skip(state, request))]
+async fn predict_batch(
+    State(state): State<AppState>,
+    Json(request): Json<BatchFeatureRequest>,
+) -> Result<Json<BatchPredictionResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let start = Instant::now();
+
+    // Validate batch
+    if request.batch.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Empty batch".to_string(),
+            }),
+        ));
+    }
+
+    // Validate feature count for each item
+    for (i, features) in request.batch.iter().enumerate() {
+        if features.len() != 15 {
+            error!("Invalid feature count at index {}: expected 15, got {}", i, features.len());
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Expected 15 features at index {}, got {}", i, features.len()),
+                }),
+            ));
+        }
+    }
+
+    let batch_size = request.batch.len();
+
+    // Run batched inference
+    let predictions = state.model.predict_batch(request.batch).map_err(|e| {
+        error!("Batch inference failed: {}", e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Batch inference failed: {}", e),
+            }),
+        )
+    })?;
+
+    let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+    tracing::debug!(
+        "Batch prediction completed: batch_size={}, latency={:.2}ms, per_item={:.3}ms",
+        batch_size,
+        latency_ms,
+        latency_ms / batch_size as f64
+    );
+
+    Ok(Json(BatchPredictionResponse {
+        predictions,
+        batch_size,
+        latency_ms,
+    }))
 }

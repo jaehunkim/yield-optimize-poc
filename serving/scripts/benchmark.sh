@@ -28,6 +28,12 @@ elif [ "$MODEL_TYPE" == "autoint-int8" ]; then
 elif [ "$MODEL_TYPE" == "autoint-int8-static" ]; then
     MODEL_PATH="$PROJECT_ROOT/models/autoint_int8_static.onnx"
     MODEL_NAME="AutoInt-INT8-Static"
+elif [ "$MODEL_TYPE" == "autoint-71m" ]; then
+    MODEL_PATH="$PROJECT_ROOT/../training/models/autoint_emb768_att8x12_dnn20481024512_best.onnx"
+    MODEL_NAME="AutoInt-71M-FP32"
+elif [ "$MODEL_TYPE" == "autoint-71m-int8" ]; then
+    MODEL_PATH="$PROJECT_ROOT/../training/models/autoint_emb768_att8x12_dnn20481024512_best_int8_dynamic.onnx"
+    MODEL_NAME="AutoInt-71M-INT8"
 else
     MODEL_PATH="$PROJECT_ROOT/models/deepfm_emb8_lr0.0001_dnn25612864_neg150_best.onnx"
     MODEL_NAME="DeepFM"
@@ -88,7 +94,11 @@ if [ "$MODE" == "single" ]; then
     RUST_LOG=warn $BINARY --port 3000 --model "$MODEL_PATH" \
         --intra-threads $INTRA_THREADS --inter-threads $INTER_THREADS &
     SERVER_PID=$!
-    sleep 3
+    sleep 30  # 71M model needs more time to load
+
+    # Allow overriding connections via env var
+    CONNECTIONS=${CONNECTIONS:-100}
+    WRK_THREADS=${WRK_THREADS:-4}
 
     log_info "Running benchmark (duration: $DURATION)..."
     echo "=============================="
@@ -97,12 +107,12 @@ if [ "$MODE" == "single" ]; then
     echo "  Processes:     1"
     echo "  Intra-threads: $INTRA_THREADS"
     echo "  Inter-threads: $INTER_THREADS"
-    echo "  WRK Threads:   4"
-    echo "  Connections:   100"
+    echo "  WRK Threads:   $WRK_THREADS"
+    echo "  Connections:   $CONNECTIONS"
     echo "  Duration:      $DURATION"
     echo "=============================="
 
-    wrk -t4 -c100 -d$DURATION \
+    wrk -t$WRK_THREADS -c$CONNECTIONS -d$DURATION \
         -s "$SCRIPT_DIR/wrk_predict.lua" \
         http://localhost:3000/predict_raw
 
@@ -110,8 +120,8 @@ if [ "$MODE" == "single" ]; then
     log_info "Results Summary:"
     echo "  Model:       $MODEL_NAME"
     echo "  Mode:        Single Process"
-    echo "  Threads:     4"
-    echo "  Connections: 100"
+    echo "  Threads:     $WRK_THREADS"
+    echo "  Connections: $CONNECTIONS"
     echo "=============================="
 
     kill $SERVER_PID

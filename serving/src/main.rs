@@ -35,6 +35,10 @@ struct Args {
     /// Number of sessions in the pool for concurrent inference
     #[arg(long, default_value_t = 8)]
     pool_size: usize,
+
+    /// Disable XNNPACK execution provider
+    #[arg(long, default_value_t = false)]
+    no_xnnpack: bool,
 }
 
 #[tokio::main]
@@ -56,6 +60,7 @@ async fn main() -> Result<()> {
         inter_threads: args.inter_threads,
         enable_mem_pattern: true,
         pool_size: args.pool_size,
+        enable_xnnpack: !args.no_xnnpack,
     };
     let model = DeepFMModel::load_with_config(&args.model, config)
         .context("Failed to load ONNX model")?;

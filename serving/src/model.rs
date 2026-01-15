@@ -22,6 +22,8 @@ pub struct ModelConfig {
     pub enable_mem_pattern: bool,
     /// Number of sessions in the pool for concurrent inference
     pub pool_size: usize,
+    /// Enable XNNPACK execution provider
+    pub enable_xnnpack: bool,
 }
 
 impl Default for ModelConfig {
@@ -31,6 +33,7 @@ impl Default for ModelConfig {
             inter_threads: 1,   // Single inference path
             enable_mem_pattern: true,
             pool_size: 8,       // 8 sessions for concurrent requests
+            enable_xnnpack: true,
         }
     }
 }
@@ -63,15 +66,19 @@ impl DeepFMModel {
         let mut sessions = Vec::with_capacity(config.pool_size);
 
         for i in 0..config.pool_size {
-            // Build session with XNNPACK execution provider for AMD CPU
-            let xnnpack_threads = NonZeroUsize::new(config.intra_threads).unwrap_or(NonZeroUsize::new(1).unwrap());
-            let xnnpack = ep::XNNPACK::default()
-                .with_intra_op_num_threads(xnnpack_threads)
-                .build();
-
             let mut builder = Session::builder()?
-                .with_intra_op_spinning(false)?
-                .with_execution_providers([xnnpack])?
+                .with_intra_op_spinning(false)?;
+
+            // Optionally enable XNNPACK execution provider
+            if config.enable_xnnpack {
+                let xnnpack_threads = NonZeroUsize::new(config.intra_threads).unwrap_or(NonZeroUsize::new(1).unwrap());
+                let xnnpack = ep::XNNPACK::default()
+                    .with_intra_op_num_threads(xnnpack_threads)
+                    .build();
+                builder = builder.with_execution_providers([xnnpack])?;
+            }
+
+            builder = builder
                 .with_optimization_level(GraphOptimizationLevel::Level3)?
                 .with_intra_threads(config.intra_threads)?
                 .with_inter_threads(config.inter_threads)?;

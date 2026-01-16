@@ -10,7 +10,7 @@ use tracing_subscriber;
 
 use crate::api::{create_router, AppState};
 use crate::features::FeatureProcessor;
-use crate::model::{DeepFMModel, ModelConfig};
+use crate::model::{DeepFMModel, ModelConfig, OnnxModel};
 
 /// DeepFM CTR prediction serving server
 #[derive(Parser, Debug)]
@@ -39,6 +39,14 @@ struct Args {
     /// Disable XNNPACK execution provider
     #[arg(long, default_value_t = false)]
     no_xnnpack: bool,
+
+    /// Path to DeepFM model for Stage 1 (Multi-Stage ranking)
+    #[arg(long)]
+    deepfm_model: Option<String>,
+
+    /// Path to AutoInt model for Stage 2 (Multi-Stage ranking)
+    #[arg(long)]
+    autoint_model: Option<String>,
 }
 
 #[tokio::main]
@@ -91,10 +99,54 @@ async fn main() -> Result<()> {
     };
     let feature_processor = FeatureProcessor::new(feature_info);
 
+    // Load Stage 1 model (DeepFM) for Multi-Stage ranking
+    let stage1_model = if let Some(ref deepfm_path) = args.deepfm_model {
+        info!("Loading Stage 1 model (DeepFM) from: {}", deepfm_path);
+        let stage1_config = ModelConfig {
+            intra_threads: args.intra_threads,
+            inter_threads: args.inter_threads,
+            enable_mem_pattern: true,
+            pool_size: args.pool_size,
+            enable_xnnpack: !args.no_xnnpack,
+        };
+        Some(Arc::new(
+            OnnxModel::load(deepfm_path, "DeepFM", stage1_config)
+                .context("Failed to load Stage 1 model (DeepFM)")?
+        ))
+    } else {
+        None
+    };
+
+    // Load Stage 2 model (AutoInt) for Multi-Stage ranking
+    let stage2_model = if let Some(ref autoint_path) = args.autoint_model {
+        info!("Loading Stage 2 model (AutoInt) from: {}", autoint_path);
+        let stage2_config = ModelConfig {
+            intra_threads: args.intra_threads,
+            inter_threads: args.inter_threads,
+            enable_mem_pattern: true,
+            pool_size: args.pool_size,
+            enable_xnnpack: !args.no_xnnpack,
+        };
+        Some(Arc::new(
+            OnnxModel::load(autoint_path, "AutoInt", stage2_config)
+                .context("Failed to load Stage 2 model (AutoInt)")?
+        ))
+    } else {
+        None
+    };
+
+    if stage1_model.is_some() && stage2_model.is_some() {
+        info!("Multi-Stage ranking enabled: DeepFM -> AutoInt");
+    } else if stage2_model.is_some() {
+        info!("Single-Stage ranking enabled: AutoInt only");
+    }
+
     // Create application state
     let state = AppState {
         model: Arc::new(model),
         feature_processor: Arc::new(feature_processor),
+        stage1_model,
+        stage2_model,
     };
 
     // Create router

@@ -48,6 +48,13 @@ pub struct DeepFMModel {
     next_session: AtomicUsize,
 }
 
+/// Generic ONNX model for any CTR model (DeepFM, AutoInt, etc.)
+pub struct OnnxModel {
+    sessions: Vec<Mutex<Session>>,
+    next_session: AtomicUsize,
+    pub name: String,
+}
+
 impl DeepFMModel {
     /// Load ONNX model from file with default configuration
     #[instrument(skip_all)]
@@ -172,6 +179,85 @@ impl DeepFMModel {
         // Extract output (batch_size CTR values)
         let (_, output_data) = outputs[0].try_extract_tensor::<f32>()?;
 
+        Ok(output_data.iter().copied().collect())
+    }
+}
+
+impl OnnxModel {
+    /// Load ONNX model from file with custom configuration
+    #[instrument(skip_all)]
+    pub fn load(model_path: impl AsRef<Path>, name: &str, config: ModelConfig) -> Result<Self> {
+        let path = model_path.as_ref();
+        info!("Loading ONNX model '{}' from: {}", name, path.display());
+        info!("Config: intra_threads={}, inter_threads={}, pool_size={}",
+              config.intra_threads, config.inter_threads, config.pool_size);
+
+        let mut sessions = Vec::with_capacity(config.pool_size);
+
+        for i in 0..config.pool_size {
+            let mut builder = Session::builder()?
+                .with_intra_op_spinning(false)?;
+
+            if config.enable_xnnpack {
+                let xnnpack_threads = NonZeroUsize::new(config.intra_threads).unwrap_or(NonZeroUsize::new(1).unwrap());
+                let xnnpack = ep::XNNPACK::default()
+                    .with_intra_op_num_threads(xnnpack_threads)
+                    .build();
+                builder = builder.with_execution_providers([xnnpack])?;
+            }
+
+            builder = builder
+                .with_optimization_level(GraphOptimizationLevel::Level3)?
+                .with_intra_threads(config.intra_threads)?
+                .with_inter_threads(config.inter_threads)?;
+
+            if config.enable_mem_pattern {
+                builder = builder.with_memory_pattern(true)?;
+            }
+
+            let session = builder
+                .commit_from_file(path)
+                .context("Failed to load ONNX model")?;
+
+            sessions.push(Mutex::new(session));
+
+            if i == 0 {
+                info!("First session for '{}' loaded successfully", name);
+            }
+        }
+
+        info!("Session pool for '{}' initialized with {} sessions", name, config.pool_size);
+        Ok(Self {
+            sessions,
+            next_session: AtomicUsize::new(0),
+            name: name.to_string(),
+        })
+    }
+
+    #[inline]
+    fn get_session_index(&self) -> usize {
+        let idx = self.next_session.fetch_add(1, Ordering::Relaxed);
+        idx % self.sessions.len()
+    }
+
+    /// Run batched inference
+    pub fn predict_batch(&self, batch_features: Vec<Vec<f32>>) -> Result<Vec<f32>> {
+        if batch_features.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let batch_size = batch_features.len();
+        let num_features = batch_features[0].len();
+
+        let flat_features: Vec<f32> = batch_features.into_iter().flatten().collect();
+        let input_array = Array2::from_shape_vec((batch_size, num_features), flat_features)?;
+        let input_value = Value::from_array(input_array)?;
+
+        let session_idx = self.get_session_index();
+        let mut session = self.sessions[session_idx].lock().unwrap();
+        let outputs = session.run(ort::inputs![input_value])?;
+
+        let (_, output_data) = outputs[0].try_extract_tensor::<f32>()?;
         Ok(output_data.iter().copied().collect())
     }
 }

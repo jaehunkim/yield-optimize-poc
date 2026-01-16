@@ -5,19 +5,23 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{error, info, instrument};
 
 use crate::features::{AdRequest, FeatureProcessor};
-use crate::model::DeepFMModel;
+use crate::model::{DeepFMModel, OnnxModel};
 
 /// Shared application state
 #[derive(Clone)]
 pub struct AppState {
     pub model: Arc<DeepFMModel>,
     pub feature_processor: Arc<FeatureProcessor>,
+    /// Stage 1 model for Multi-Stage ranking (DeepFM - fast filtering)
+    pub stage1_model: Option<Arc<OnnxModel>>,
+    /// Stage 2 model for Multi-Stage ranking (AutoInt - precise ranking)
+    pub stage2_model: Option<Arc<OnnxModel>>,
 }
 
 /// Health check response
@@ -60,6 +64,59 @@ pub struct ErrorResponse {
     pub error: String,
 }
 
+/// Rank request for Multi-Stage ranking
+#[derive(Deserialize)]
+pub struct RankRequest {
+    /// Batch of feature vectors (each with 15 features)
+    pub candidates: Vec<Vec<f32>>,
+    /// Final top-k to return
+    #[serde(default = "default_top_k")]
+    pub top_k: usize,
+    /// Stage 1 top-k (for multi-stage)
+    #[serde(default = "default_stage1_k")]
+    pub stage1_k: usize,
+    /// Use multi-stage ranking (true) or single-stage (false)
+    #[serde(default = "default_multi_stage")]
+    pub multi_stage: bool,
+}
+
+fn default_top_k() -> usize { 10 }
+fn default_stage1_k() -> usize { 100 }
+fn default_multi_stage() -> bool { true }
+
+/// Single ranking result
+#[derive(Serialize)]
+pub struct RankItem {
+    pub index: usize,
+    pub ctr: f32,
+    pub rank: usize,
+}
+
+/// Rank response
+#[derive(Serialize)]
+pub struct RankResponse {
+    pub rankings: Vec<RankItem>,
+    pub latency: RankLatency,
+    pub stats: RankStats,
+}
+
+/// Latency breakdown for ranking
+#[derive(Serialize)]
+pub struct RankLatency {
+    pub stage1_ms: f64,
+    pub stage2_ms: f64,
+    pub total_ms: f64,
+}
+
+/// Stats for ranking
+#[derive(Serialize)]
+pub struct RankStats {
+    pub input: usize,
+    pub after_stage1: usize,
+    pub output: usize,
+    pub mode: String,
+}
+
 /// Create API router
 pub fn create_router(state: AppState) -> Router {
     Router::new()
@@ -67,6 +124,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/predict", post(predict))
         .route("/predict_raw", post(predict_raw))
         .route("/predict_batch", post(predict_batch))
+        .route("/rank", post(rank))
         .with_state(state)
 }
 
@@ -216,5 +274,171 @@ async fn predict_batch(
         predictions,
         batch_size,
         latency_ms,
+    }))
+}
+
+/// Multi-Stage ranking endpoint
+///
+/// Supports two modes:
+/// - Single-Stage: AutoInt (12MB) processes all candidates
+/// - Multi-Stage: DeepFM (18KB) filters to top-K, then AutoInt (12MB) ranks
+#[instrument(skip(state, request))]
+async fn rank(
+    State(state): State<AppState>,
+    Json(request): Json<RankRequest>,
+) -> Result<Json<RankResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let total_start = Instant::now();
+
+    // Validate input
+    if request.candidates.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Empty candidates".to_string(),
+            }),
+        ));
+    }
+
+    let input_size = request.candidates.len();
+
+    // Check if models are loaded
+    let stage2_model = state.stage2_model.as_ref().ok_or_else(|| {
+        error!("Stage 2 model (AutoInt) not loaded");
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: "Stage 2 model (AutoInt) not loaded. Start server with --autoint-model".to_string(),
+            }),
+        )
+    })?;
+
+    let (rankings, stage1_ms, stage2_ms, after_stage1, mode) = if request.multi_stage {
+        // Multi-Stage: DeepFM -> AutoInt
+        let stage1_model = state.stage1_model.as_ref().ok_or_else(|| {
+            error!("Stage 1 model (DeepFM) not loaded");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorResponse {
+                    error: "Stage 1 model (DeepFM) not loaded. Start server with --deepfm-model".to_string(),
+                }),
+            )
+        })?;
+
+        // Stage 1: DeepFM for fast filtering
+        let stage1_start = Instant::now();
+        let stage1_scores = stage1_model.predict_batch(request.candidates.clone()).map_err(|e| {
+            error!("Stage 1 inference failed: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Stage 1 inference failed: {}", e),
+                }),
+            )
+        })?;
+        let stage1_ms = stage1_start.elapsed().as_secs_f64() * 1000.0;
+
+        // Get top-K indices from Stage 1
+        let stage1_k = request.stage1_k.min(input_size);
+        let mut indexed_scores: Vec<(usize, f32)> = stage1_scores
+            .into_iter()
+            .enumerate()
+            .collect();
+        indexed_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let top_k_indices: Vec<usize> = indexed_scores.iter().take(stage1_k).map(|(i, _)| *i).collect();
+
+        // Extract top-K candidates for Stage 2
+        let stage2_candidates: Vec<Vec<f32>> = top_k_indices
+            .iter()
+            .map(|&i| request.candidates[i].clone())
+            .collect();
+
+        // Stage 2: AutoInt for precise ranking
+        let stage2_start = Instant::now();
+        let stage2_scores = stage2_model.predict_batch(stage2_candidates).map_err(|e| {
+            error!("Stage 2 inference failed: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Stage 2 inference failed: {}", e),
+                }),
+            )
+        })?;
+        let stage2_ms = stage2_start.elapsed().as_secs_f64() * 1000.0;
+
+        // Combine indices with Stage 2 scores and sort
+        let mut final_scores: Vec<(usize, f32)> = top_k_indices
+            .into_iter()
+            .zip(stage2_scores.into_iter())
+            .collect();
+        final_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Take final top-k
+        let rankings: Vec<RankItem> = final_scores
+            .into_iter()
+            .take(request.top_k)
+            .enumerate()
+            .map(|(rank, (index, ctr))| RankItem {
+                index,
+                ctr,
+                rank: rank + 1,
+            })
+            .collect();
+
+        (rankings, stage1_ms, stage2_ms, stage1_k, "multi-stage".to_string())
+    } else {
+        // Single-Stage: AutoInt only
+        let stage2_start = Instant::now();
+        let scores = stage2_model.predict_batch(request.candidates).map_err(|e| {
+            error!("Single-stage inference failed: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Single-stage inference failed: {}", e),
+                }),
+            )
+        })?;
+        let stage2_ms = stage2_start.elapsed().as_secs_f64() * 1000.0;
+
+        // Sort and take top-k
+        let mut indexed_scores: Vec<(usize, f32)> = scores
+            .into_iter()
+            .enumerate()
+            .collect();
+        indexed_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let rankings: Vec<RankItem> = indexed_scores
+            .into_iter()
+            .take(request.top_k)
+            .enumerate()
+            .map(|(rank, (index, ctr))| RankItem {
+                index,
+                ctr,
+                rank: rank + 1,
+            })
+            .collect();
+
+        (rankings, 0.0, stage2_ms, input_size, "single-stage".to_string())
+    };
+
+    let total_ms = total_start.elapsed().as_secs_f64() * 1000.0;
+
+    info!(
+        "Rank completed: mode={}, input={}, after_stage1={}, output={}, latency={:.2}ms",
+        mode, input_size, after_stage1, rankings.len(), total_ms
+    );
+
+    Ok(Json(RankResponse {
+        rankings,
+        latency: RankLatency {
+            stage1_ms,
+            stage2_ms,
+            total_ms,
+        },
+        stats: RankStats {
+            input: input_size,
+            after_stage1,
+            output: request.top_k.min(after_stage1),
+            mode,
+        },
     }))
 }
